@@ -5,7 +5,7 @@ Script per a l'extracció i el preprocessament dels fitxers CSV amb dades meteor
 Aquest codi:
   - Llegeix els fitxers originals sense modificar-los (fes servir 'utf-8' i, si falla, 'latin-1').
   - Extreu la data i l'hora del nom del fitxer per generar la columna 'Timestamp'
-    (format: "YYYY-MM-DD HH:00:00"); si l’hora extreta és ≥ 24, s'omet el fitxer.
+    (format: "YYYY-MM-DD HH:00:00"); si l'hora extreta és ≥ 24, s'omet el fitxer.
   - Filtra les dades per mantenir només les fonts oficials (segons la llista FONTS_OFICIALS).
   - Selecciona les columnes d'interès:
        * Per als fitxers dels anys 2016-2023: ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt',
@@ -22,7 +22,7 @@ Aquest codi:
       • Si encara no es troben dades vàlides, el valor quedarà com a NaN.
   - Abans de desar el fitxer processat, s'eliminen les estacions (files) que contenen algun NaN
     en alguna variable requerida.
-  - Ajusta els intervals de 'Humitat' (0–100) i 'VentFor' (0–70).
+  - Ajusta els intervals de 'Humitat' (0-100%), 'VentFor' (0-200km/h) i 'VentDir' (0-360º).
   - Desa els fitxers processats en un directori separat, mantenint l'estructura original.
   - Mostra una barra de progrés per saber quants fitxers s'han processat.
 
@@ -46,7 +46,8 @@ logging.basicConfig(
     handlers=[logging.FileHandler(log_filename)]
 )
 
-# Llista de fonts oficials
+# Llista de fonts fiables d'estacions meteorològiques
+# (les dades d'altres fonts poden ser menys fiables o no estar completament actualitzades)
 FONTS_OFICIALS = ["Aemet", "METEOCAT", "METEOCAT_WEB", "Meteoclimatic", "Vallsdaneu",
                    "SAIH", "avamet", "Meteoprades", "MeteoPirineus", "WLINK_DAVIS"]
 
@@ -74,11 +75,13 @@ def load_file(file_path: str) -> pd.DataFrame:
     """
     Carrega el fitxer CSV utilitzant la codificació adequada i emmagatzema el resultat a la caché.
     """
+    #Comprovem si el fitxer ja està a la caché per evitar recàrregues innecessàries
     if file_path in file_cache:
         return file_cache[file_path]
     if not os.path.exists(file_path):
         return None
-    try:
+    # Intentem llegir el fitxer amb 'utf-8' i, si falla, amb 'latin-1'. Si falla de nou, retornem None.
+    try: 
         df = pd.read_csv(file_path, encoding='utf-8', na_values=['', ' '],
                          quotechar='"', sep=',', engine='python', on_bad_lines='skip')
     except UnicodeDecodeError:
@@ -105,13 +108,14 @@ def get_station_value(root_directory: str, timestamp: datetime, station_id, vari
     df = load_file(file_path)
     if df is None or df.empty:
         return None
-    # Filtrar per fonts oficials
+    # Filtrar per fonts fiables i per l'estació concreta
     if 'Font' in df.columns:
         df = df[df['Font'].isin(FONTS_OFICIALS)]
         if df.empty:
             return None
     else:
         return None
+    #Busquem la fila que coincideixi amb l'id de l'estació i retornem el valor de la variable convertit a numèric
     if 'id' not in df.columns:
         return None
     df_station = df[df['id'] == station_id]
@@ -124,13 +128,15 @@ def get_station_value(root_directory: str, timestamp: datetime, station_id, vari
     except Exception as e:
         logging.error(f"Error convertint la variable {variable} per l'estació {station_id} al fitxer {file_path}: {e}")
         return None
+    # Si la variable és 'Pluja' i el valor és NaN, considerem que no plou i ho reemplacem per 0
     if variable == 'Pluja' and pd.isna(value):
         value = 0.0
     return value
 
 def get_neighbor_value(root_directory: str, current_timestamp: datetime, station_id, variable: str, direction: str):
     """
-    Cerca el valor vàlid més proper per a la variable d'una estació en la direcció indicada.
+    Cerca el valor vàlid més proper per a la variable d'una estació en la direcció indicada 
+    (entenent "proper" com a dades dels fitxers d'hores adjacents).
     direction: 'backward' per hores anteriors, 'forward' per hores posteriors.
     
     La cerca es fa de la següent manera:
@@ -149,6 +155,7 @@ def get_neighbor_value(root_directory: str, current_timestamp: datetime, station
     # Cerca ampliada: mateixa hora del dia anterior (o posterior)
     candidate_time = current_timestamp + timedelta(days=delta)
     value = get_station_value(root_directory, candidate_time, station_id, variable)
+    # Si s'ha trobat un valor vàlid, es retorna una tupla (valor, timestamp). Si no, es retorna None.
     if value is not None and not pd.isna(value):
         return value, candidate_time
     return None
@@ -161,6 +168,8 @@ def interpolate_value(root_directory: str, current_timestamp: datetime, station_
     """
     backward = get_neighbor_value(root_directory, current_timestamp, station_id, variable, 'backward')
     forward = get_neighbor_value(root_directory, current_timestamp, station_id, variable, 'forward')
+
+    # Si es troben valors vàlids per a les hores anterior i posterior, es realitza la interpolació
     if backward is not None and forward is not None:
         value_back, time_back = backward
         value_forward, time_forward = forward
@@ -171,6 +180,7 @@ def interpolate_value(root_directory: str, current_timestamp: datetime, station_
         fraction = (current_timestamp - time_back).total_seconds() / total_seconds
         interpolated = value_back + (value_forward - value_back) * fraction
         return interpolated
+    # Si no es troben valors vàlids, es registra el cas i es retorna NaN
     else:
         #logging.info(f"No s'ha pogut interpolar {variable} per l'estació {station_id} al timestamp {current_timestamp}.")
         return np.nan
@@ -192,15 +202,18 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
       - Imputa els valors nuls de les variables 'Temp', 'Humitat', 'VentDir', 'VentFor' i 'Patm' (si existeix)
         fent interpolació amb dades vàlides dels fitxers adjacents (dins d'un marge de 8 hores o, si no,
         a la mateixa hora del dia anterior/posterior). Si per alguna variable encara hi ha NaN, es descarta la fila.
-      - Ajusta els intervals de 'Humitat' (0–100) i 'VentFor' (0–70).
+      - Ajusta els intervals de 'Humitat' (0-100) i 'VentFor' (0-70).
     Retorna:
         pd.DataFrame: DataFrame processat o None en cas d'error crític.
     """
+
+    # Llegir el fitxer i comprovar si existeix
     if file_path is None:
         return None
     if not os.path.exists(file_path):
         logging.error(f"El fitxer {file_path} no existeix.")
         return None
+    # Intentem llegir el fitxer amb 'utf-8' i, si falla, amb 'latin-1'. Si falla de nou, retornem None.
     try:
         data = pd.read_csv(file_path, encoding='utf-8', na_values=['', ' '],
                            quotechar='"', sep=',', engine='python', on_bad_lines='skip')
@@ -216,16 +229,18 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
         logging.error(f"Error llegint {file_path}: {e}")
         return None
 
+    # Comprovar si el fitxer està buit o sense columnes. Si és així, es retorna un DataFrame buit.
     if data.empty or data.columns.size == 0:
         logging.warning(f"Fitxer {file_path} llegit sense columnes. Es retorna DataFrame buit.")
         return pd.DataFrame()
 
-    # Filtrar per fonts oficials
+    # Filtrar per fonts fiables (columna 'Font')
     if 'Font' in data.columns:
         data = data[data['Font'].isin(FONTS_OFICIALS)]
         if data.empty:
             logging.warning(f"Fitxer {file_path} no conté fonts oficials després del filtratge.")
             return pd.DataFrame()
+    # Si no hi ha la columna 'Font', es descarta el fitxer
     else:
         logging.warning(f"La columna 'Font' no està present a {file_path}.")
         return None
@@ -233,26 +248,32 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
     # Extreure el Timestamp a partir del nom del fitxer
     base_filename = os.path.basename(file_path)
     match = re.match(r'(\d{4})(\d{2})(\d{2})(\d{2})dadesPC_utc\.csv', base_filename)
+    # Primer comprovem si el nom del fitxer és vàlid
     if match:
         year_str, month, day, hour = match.groups()
         hour_int = int(hour)
+        # Comprovem que l'hora sigui vàlida (0-23h)
         if hour_int >= 24:
             logging.info(f"Fitxer {file_path} té hora invàlida ({hour_int}). S'omet el processament.")
             return None
+        # Creem el timestamp a partir de les dades extretes
         timestamp_str = f"{year_str}-{month}-{day} {hour}:00:00"
+        # Convertim el timestamp a datetime
         try:
             ts = pd.to_datetime(timestamp_str, format='%Y-%m-%d %H:%M:%S')
         except Exception as e:
             logging.error(f"Error convertint el Timestamp de {file_path}: {e}")
             return None
+        # Afegim el timestamp al DataFrame
         data['Timestamp'] = ts.strftime('%Y-%m-%d %H:%M:%S')
     else:
         logging.error(f"No s'ha pogut extreure el Timestamp de {file_path}.")
         return None
-
+    
+    # Comprovem si l'any del fitxer és vàlid per al preprocessament
     year = ts.year
 
-    # Comprovem la columna 'Patm'
+    # Comprovem si la columna 'Patm' està present si l'any no és 2015
     if year != 2015 and 'Patm' not in data.columns:
         logging.error(f"El fitxer {file_path} per a l'any {year} no conté la columna 'Patm' requerida.")
         return None
@@ -263,6 +284,7 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
     else:
         column_order = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'lat', 'lon']
 
+    # Seleccionem les columnes d'interès i reordenem
     data = data[[col for col in column_order if col in data.columns] + ['Timestamp']]
 
     # Converteix les columnes numèriques
@@ -272,10 +294,10 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
     for col in numeric_columns:
         data[col] = pd.to_numeric(data[col], errors='coerce')
 
-    # La variable 'Pluja': si hi ha NaN, es considera 0
+    # La variable 'Pluja', si hi ha NaN, es considera 0
     data['Pluja'] = data['Pluja'].fillna(0)
 
-    # Processar la variable "VentDir": mapar direccions a graus
+    # Processar la variable "VentDir": mapar de direccions a graus
     if 'VentDir' in data.columns:
         mapping_direccions = {
             'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
@@ -298,7 +320,7 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
 
     current_timestamp = ts
 
-    # Processar la variable "Pluja": calcular la diferència respecte l'hora anterior
+    # Processar la variable "Pluja": calcular la diferència respecte l'hora anterior per obtenir la pluja acumulada per hora
     pluja_values = []
     for idx, row in data.iterrows():
         station_id = row['id']
@@ -317,7 +339,7 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
         pluja_values.append(pluja_real)
     data['Pluja'] = pluja_values
 
-    # Imputar les altres variables amb interpolació
+    # Imputar les altres variables amb interpolació si hi ha NaN (excepte 'Pluja' i 'Alt')
     variables_interp = ['Temp', 'Humitat', 'VentDir', 'VentFor']
     if 'Patm' in data.columns:
         variables_interp.append('Patm')
@@ -334,11 +356,13 @@ def preprocess_csv(file_path: str, root_directory: str) -> pd.DataFrame:
     if data.shape[0] < n_antes:
         logging.info(f"S'han eliminat {n_antes - data.shape[0]} estacions per falta de dades interpolades.")
 
-    # Ajustar els intervals de les variables segons especificacions
+    # Ajustar els intervals de les variables segons especificacions: 'Humitat' (0-100 %), 'VentFor' (0-200 km/h) i 'VentDir' (0-360°)
     if 'Humitat' in data.columns:
         data['Humitat'] = data['Humitat'].clip(0, 100)
     if 'VentFor' in data.columns:
-        data['VentFor'] = data['VentFor'].clip(0, 70)
+        data['VentFor'] = data['VentFor'].clip(0, 200)
+    if 'VentDir' in data.columns:
+        data['VentDir'] = data['VentDir'].clip(0, 360)
 
     return data
 
@@ -355,9 +379,12 @@ def process_all_csvs(root_directory: str, processed_directory: str):
         "Clima", "Clima METEOCAT", "error_VAR", "html", "png", "var_vextrems", 
         "2013", "2014", "2015"
     ]
+
+    # Funció per filtrar els directoris que contenen les subcadenes excloses
     def dir_valid(d):
         return not any(sub.lower() in d.lower() for sub in excluded_substrings) and not re.search(r'\d+_old', d)
 
+    # Recórrer tots els fitxers del directori arrel amb os.walk i processar els que compleixin els criteris
     files_to_process = []
     for root_dir, dirs, files in os.walk(root_directory):
         print("Processant directori:", root_dir)
@@ -377,6 +404,7 @@ def process_all_csvs(root_directory: str, processed_directory: str):
         print("No s'ha trobat cap fitxer que compleixi els criteris.")
         return
 
+    # Processar els fitxers i desar-los al directori de sortida (barra de progrés amb tqdm)
     print("Iniciant processament...")
     for file_path in tqdm(files_to_process, desc="Processant fitxers", unit="fitxer"):
         processed_df = preprocess_csv(file_path, root_directory)
@@ -392,13 +420,11 @@ def process_all_csvs(root_directory: str, processed_directory: str):
                 logging.error(f"Error desant el fitxer {output_file}: {e}")
 
 if __name__ == "__main__":
+    # Directoris d'entrada i sortida
     root_directory = 'F:/DADES_METEO_PC'
     processed_directory = 'F:/DADES_METEO_PC_PROCESSATS_IMPUTATS'
     
+    # Processar els fitxers
     process_all_csvs(root_directory, processed_directory)
     logging.info("Processament finalitzat.")
     print("Processament finalitzat.")
-
-
-
-
