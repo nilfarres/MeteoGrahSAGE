@@ -29,13 +29,13 @@ Aquest codi:
 Les dades originals romanen intactes.
 """
 
-import os
-import re
-import pandas as pd
-import numpy as np
-import logging
-from datetime import datetime, timedelta
-from tqdm import tqdm  # Per a la barra de progrés
+import os                                  # Per a la gestió de fitxers i directoris
+import re                                  # Per a les expressions regulars
+import pandas as pd                        # Per a la manipulació de dades
+import numpy as np                         # Per a càlculs numèrics
+import logging                             # Per a la gestió de logs
+from datetime import datetime, timedelta   # Per a la manipulació de dates i hores
+from tqdm import tqdm                      # Per a la barra de progrés
 
 # Configurar el logger perquè escrigui només en el fitxer de logs
 os.makedirs("logs", exist_ok=True)
