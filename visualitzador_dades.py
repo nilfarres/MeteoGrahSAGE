@@ -6,7 +6,7 @@ import numpy as np
 file_path = "NOM_DEL_FITXER.csv"  # Substitueix pel nom del fitxer correcte
 df = pd.read_csv(file_path)
 
-# ----------------- MAPA DE LES ESTACIONS -----------------
+# ----------------- MAPA DE LES ESTACIONS METEOROLÒGIQUES -----------------
 plt.figure(figsize=(8, 6))
 plt.scatter(df["lon"], df["lat"], c="red", marker="o", label="Estacions")
 plt.xlabel("Longitud")
