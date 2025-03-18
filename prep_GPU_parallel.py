@@ -55,13 +55,13 @@ logging.basicConfig(
     handlers=[logging.FileHandler(log_filename)]
 )
 
-# Llista de fonts oficials d'estacions meteorològiques
+# Llista de fonts fiables d'estacions meteorològiques
 FONTS_OFICIALS = [
     "Aemet", "METEOCAT", "METEOCAT_WEB", "Meteoclimatic", "Vallsdaneu",
     "SAIH", "avamet", "Meteoprades", "MeteoPirineus", "WLINK_DAVIS"
 ]
 
-# Anys per a interpolació i els anys que es pre-processaran
+# Anys per a interpolació i anys que es pre-processaran
 YEARS_FOR_INTERPOLATION = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
 PROCESSED_YEARS = [year for year in YEARS_FOR_INTERPOLATION if year >= 2016]
 
