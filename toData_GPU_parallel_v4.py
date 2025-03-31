@@ -2,22 +2,23 @@
 """
 toData_GPU_parallel_v4.py
 
-Script per transformar fitxers CSV preprocessats en objectes Data de torch_geometric,
-optimitzat per alimentar el model MeteoGraphSAGE.
+Script per convertir fitxers CSV ja preprocessats (per prep_GPU_parallel.py)
+en objectes Data de PyTorch Geometric per alimentar el model MeteoGraphSAGE (GraphSAGE).
 
-Millores respecte a la versió toData_GPU_parallel_v3.py:
-  - Normalització personalitzada que exclou les features temporals (hora/dia) per preservar el seu valor cíclic.
-  - Possibilitat de convertir les coordenades (lat, lon, Alt) a coordenades mètriques (km) abans de construir el graf.
-  - Escalament de la distància d’aresta per ajustar la seva magnitud.
-  - Inclusió de la diferència de pressió (Patm) com a atribut d’aresta.
-  - Possibilitat de definir el dispositiu GPU a utilitzar (per evitar saturació amb múltiples processos).
-  - Paràmetres configurables via línia de comandes.
-
+Millores respecte a toData_GPU_parallel_v4.py:
+  - Es construeixen les features dels nodes amb codificació trigonomètrica per a la direcció del vent
+    i característiques temporals cícliques (sense normalitzar-les, si es vol preservar la seva naturalesa).
+  - Possibilitat de convertir les coordenades (lat, lon, Alt) a coordenades mètriques (km) per a un càlcul de grafs més coherent.
+  - Escalament de la distància geodèsica a cada aresta per ajustar-ne la magnitud.
+  - Inclusió de la diferència de pressió (Patm) com a atribut d'aresta.
+  - Selecció del dispositiu GPU per a la conversió de tensors.
+  - Configurabilitat mitjançant arguments de línia de comandes.
+  
 Autor: Nil Farrés Soler
 """
 
 import os, glob, re, argparse, logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -34,20 +35,20 @@ DEFAULT_OUTPUT_ROOT = "D:/DADES_METEO_PC_TO_DATA"
 DEFAULT_MAX_WORKERS = 8
 DEFAULT_K_NEIGHBORS = 5
 DEFAULT_RADIUS_QUANTILE = 0.75
-DEFAULT_EDGE_DISTANCE_SCALE = 100.0
+DEFAULT_EDGE_DISTANCE_SCALE = 100.0  # Dividir la distància per 100 km per portar-la a una escala comparable
 
-# Columnes requerides i fonts fiables
+# Es assumeix que els fitxers ja tenen totes les columnes requerides
 REQUIRED_COLUMNS = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon', 'Timestamp']
 OFFICIAL_SOURCES = ["Aemet", "METEOCAT", "METEOCAT_WEB", "Meteoclimatic", "Vallsdaneu",
                     "SAIH", "avamet", "Meteoprades", "MeteoPirineus", "WLINK_DAVIS"]
 
-# Llista de columnes de features finals
+# Columnes finals de features que es volen generar.
 FEATURE_COLUMNS = ['Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt', 
                    'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos', 'dia_sin', 'dia_cos']
 # Llista de features temporals que volem EXCLÒURE de la normalització
 TEMPORAL_FEATURES = ['hora_sin', 'hora_cos', 'dia_sin', 'dia_cos']
 
-# Anys per a interpolació i preprocessament
+# Anys que s'han preprocessat (per exemple, 2016-2024)
 YEARS_FOR_INTERPOLATION = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 PROCESSED_YEARS = [year for year in YEARS_FOR_INTERPOLATION if year >= 2016]
 
@@ -56,10 +57,47 @@ os.makedirs("logs", exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Afegeix al dataframe les features temporals cícliques:
+      - hora_sin i hora_cos basades en l'hora del Timestamp.
+      - dia_sin i dia_cos basades en el dia de l'any.
+    """
+    if not np.issubdtype(df['Timestamp'].dtype, np.datetime64):
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    df['hora_sin'] = np.sin(2 * np.pi * df['Timestamp'].dt.hour / 24)
+    df['hora_cos'] = np.cos(2 * np.pi * df['Timestamp'].dt.hour / 24)
+    # S'usa (dia - 1) per que el 1 de gener comenci a 0 rad
+    df['dia_sin'] = np.sin(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
+    df['dia_cos'] = np.cos(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
+    return df
+
+
+def encode_wind_direction(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Converteix la columna 'VentDir' textual a dues noves columnes: 'VentDir_sin' i 'VentDir_cos'.
+    Si la direcció ja és numèrica, s'aplica directament la codificació.
+    """
+    mapping = {
+        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
+        'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5,
+        'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
+        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
+    }
+    # Si els valors són strings, es fa el mapping
+    if df['VentDir'].dtype == object:
+        df['VentDir'] = df['VentDir'].map(mapping)
+    # Calcular les components sin i cos
+    df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
+    df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
+    df.drop(columns=['VentDir'], inplace=True)
+    return df
+
+
 def custom_normalize_features(x: torch.Tensor, feature_names: list, exclude_names: list) -> torch.Tensor:
     """
-    Normalitza les columnes de x corresponents a les features no incloses en exclude_names.
-    Les columnes a excloure es deixen sense canvis.
+    Normalitza les columnes del tensor x corresponents a les features no incloses a exclude_names.
+    Les columnes temporals es deixen sense modificar per preservar el seu valor cíclic.
     """
     x_norm = x.clone()
     for i, name in enumerate(feature_names):
@@ -74,47 +112,47 @@ def custom_normalize_features(x: torch.Tensor, feature_names: list, exclude_name
     return x_norm
 
 
-def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
+def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool) -> torch.Tensor:
     """
-    Afegeix a df les característiques temporals cícliques:
-      - hora_sin, hora_cos basades en l'hora del Timestamp.
-      - dia_sin, dia_cos basades en el dia de l'any.
+    A partir d'un dataframe preprocesat, crea el tensor de features dels nodes.
+    S'apliquen la codificació trigonomètrica per a la direcció del vent i es
+    generen les features temporals. Si exclude_temporal_norm és True, les features temporals
+    no es normalitzen.
     """
-    if not np.issubdtype(df['Timestamp'].dtype, np.datetime64):
-        df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
-    df['hora_sin'] = np.sin(2 * np.pi * df['Timestamp'].dt.hour / 24)
-    df['hora_cos'] = np.cos(2 * np.pi * df['Timestamp'].dt.hour / 24)
-    df['dia_sin'] = np.sin(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
-    df['dia_cos'] = np.cos(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
-    return df
+    if 'Timestamp' in df.columns:
+        df = add_cyclical_time_features(df)
+    if 'VentDir' in df.columns:
+        df = encode_wind_direction(df)
+    missing = set(FEATURE_COLUMNS) - set(df.columns)
+    if missing:
+        logging.error(f"Columns missing: {missing}")
+        raise ValueError("Missing feature columns in dataframe.")
+    x = torch.tensor(df[FEATURE_COLUMNS].values, dtype=torch.float)
+    if exclude_temporal_norm:
+        x = custom_normalize_features(x, FEATURE_COLUMNS, TEMPORAL_FEATURES)
+    else:
+        x = torch.clone(x)
+        x = normalize_features(x)
+    return x
 
 
-def encode_wind_direction(df: pd.DataFrame) -> pd.DataFrame:
+def create_position_tensor(df: pd.DataFrame, use_metric: bool) -> torch.Tensor:
     """
-    Transforma la columna 'VentDir' textual en dues columnes numèriques: 'VentDir_sin' i 'VentDir_cos',
-    convertint la direcció en graus (seguint un mapping) a sin i cos.
+    Converteix les columnes ['lat', 'lon', 'Alt'] en un tensor de posicions.
+    Si use_metric és True, es converteixen a coordenades mètriques (km) amb una projecció local.
     """
-    mapping = {
-        'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
-        'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5,
-        'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
-        'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5
-    }
-    df['VentDir'] = df['VentDir'].map(mapping)
-    df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
-    df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
-    df.drop(columns=['VentDir'], inplace=True)
-    return df
-
-
-def normalize_features(x: torch.Tensor) -> torch.Tensor:
-    """
-    Normalitza el tensor x perquè cada característica tingui mitjana 0 i desviació estàndard 1.
-    """
-    mean = x.mean(dim=0, keepdim=True)
-    std = x.std(dim=0, keepdim=True)
-    std[std == 0] = 1
-    return (x - mean) / std
+    pos = torch.tensor(df[['lat', 'lon', 'Alt']].values, dtype=torch.float)
+    if use_metric:
+        # Projecció local: s'aproxima 1 grau de lat ≈ 111 km i 1 grau de lon ≈ 111*cos(lat_mean) km
+        lat = pos[:, 0]
+        lon = pos[:, 1]
+        alt = pos[:, 2] / 1000.0  # Convertir altitud a km
+        lat_mean = torch.deg2rad(lat.mean())
+        x = lon * 111.0 * torch.cos(lat_mean)
+        y = lat * 111.0
+        z = alt
+        pos = torch.stack((x, y, z), dim=1)
+    return pos
 
 
 def compute_geodesic_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> torch.Tensor:
@@ -123,7 +161,7 @@ def compute_geodesic_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> t
       - pos[:,0]: latitud en graus
       - pos[:,1]: longitud en graus
       - pos[:,2]: altitud en metres
-    Es retorna la distància en km, combinant la distància horitzontal (Haversine)
+    Retorna la distància en km combinant la distància horitzontal (Haversine)
     i la diferència d'altitud (convertida a km).
     """
     lat1 = torch.deg2rad(pos_src[:, 0])
@@ -143,65 +181,13 @@ def compute_geodesic_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> t
     return distance.unsqueeze(1)
 
 
-def convert_to_metric(pos: torch.Tensor) -> torch.Tensor:
-    """
-    Converteix les coordenades (lat, lon, Alt) a coordenades mètriques en km.
-    Utilitza una projecció local amb latitud mitjana.
-    """
-    lat = pos[:, 0]
-    lon = pos[:, 1]
-    alt = pos[:, 2]  # en metres
-    # Convertir altitud a km
-    alt_km = alt / 1000.0
-    # Calcular la latitud mitjana en radians per a la correcció de longitud
-    lat_mean = torch.deg2rad(lat.mean())
-    # Aproximadament, 1 grau de latitud ≈ 111 km; per longitud, 111 * cos(lat_mean)
-    x = lon * 111.0 * torch.cos(lat_mean)
-    y = lat * 111.0
-    z = alt_km
-    return torch.stack((x, y, z), dim=1)
-
-
-def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool) -> torch.Tensor:
-    """
-    Crea el tensor de característiques dels nodes a partir del dataframe.
-    Incorpora la codificació trigonomètrica per VentDir i les features temporals.
-    Si exclude_temporal_norm és True, les columnes temporals no es normalitzen.
-    """
-    if 'Timestamp' in df.columns:
-        df = add_cyclical_time_features(df)
-    if 'VentDir' in df.columns:
-        df = encode_wind_direction(df)
-    missing = set(FEATURE_COLUMNS) - set(df.columns)
-    if missing:
-        logging.error(f"Columns missing: {missing}")
-        raise ValueError("Missing feature columns in dataframe.")
-    x = torch.tensor(df[FEATURE_COLUMNS].values, dtype=torch.float)
-    if exclude_temporal_norm:
-        x = custom_normalize_features(x, FEATURE_COLUMNS, TEMPORAL_FEATURES)
-    else:
-        x = normalize_features(x)
-    return x
-
-
-def create_position_tensor(df: pd.DataFrame, use_metric: bool) -> torch.Tensor:
-    """
-    Converteix les columnes ['lat', 'lon', 'Alt'] en un tensor de posicions.
-    Si use_metric és True, es converteixen a coordenades mètriques en km.
-    """
-    pos = torch.tensor(df[['lat', 'lon', 'Alt']].values, dtype=torch.float)
-    if use_metric:
-        pos = convert_to_metric(pos)
-    return pos
-
-
 def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: int, radius_quantile: float, edge_distance_scale: float) -> (torch.Tensor, torch.Tensor):
     """
-    Crea l'edge_index i edge_attr del graf.
-    Si num_nodes < 50, s'utilitza knn_graph; en cas contrari, s'utilitza radius_graph amb radi definit pel quantil.
-    El graf es converteix a no dirigit.
+    Construeix l'edge_index i edge_attr del graf.
+    Si num_nodes < 50 s'utilitza knn_graph; sinó, s'aplica radius_graph amb radi definit pel quantil.
+    El graf és convertit a no dirigit.
     
-    edge_attr inclou:
+    edge_attr conté cinc components:
       1. Distància geodèsica 3D (km) escalada per edge_distance_scale.
       2. Diferència absoluta en Temp (índex 0 de x).
       3. Diferència absoluta en Humitat (índex 1 de x).
@@ -226,8 +212,7 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     
     src, dst = edge_index
     edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst])
-    # Escalar la distància per edge_distance_scale
-    edge_attr_dist = edge_attr_dist / edge_distance_scale
+    edge_attr_dist = edge_attr_dist / edge_distance_scale  # Escalar la distància
     diff_temp = torch.abs(x[src, 0] - x[dst, 0]).unsqueeze(1)
     diff_humitat = torch.abs(x[src, 1] - x[dst, 1]).unsqueeze(1)
     diff_ventFor = torch.abs(x[src, 3] - x[dst, 3]).unsqueeze(1)
@@ -236,18 +221,21 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     return edge_index, edge_attr
 
 
-def process_file(file_path: str, input_root: str, output_root: str, k_neighbors: int, radius_quantile: float, edge_distance_scale: float, use_metric: bool, exclude_temporal_norm: bool, gpu_device: str):
+def process_file(file_path: str, input_root: str, output_root: str, k_neighbors: int,
+                 radius_quantile: float, edge_distance_scale: float,
+                 use_metric: bool, exclude_temporal_norm: bool, gpu_device: str):
     """
-    Processa un fitxer CSV per transformar-lo en un objecte Data.
-    Inclou lectura, filtratge, creació de features, construcció del graf i desament.
+    Processa un fitxer CSV preprocesat per convertir-lo en un objecte Data de PyTorch Geometric.
+    Es assumeix que el CSV ja conté les dades netes (preprocessades per prep_GPU_parallel.py).
     """
     try:
         df = pd.read_csv(file_path)
-        df = df[REQUIRED_COLUMNS]
-        df = df[df['Font'].isin(OFFICIAL_SOURCES)]
-        if df.empty:
-            logging.info(f"El fitxer {file_path} no conté dades oficials. S'omet.")
+        # Comprovar que el fitxer conté les columnes requerides
+        if not set(REQUIRED_COLUMNS).issubset(df.columns):
+            logging.error(f"El fitxer {file_path} no conté totes les columnes requerides.")
             return
+        # Es pot assumir que el CSV ja ha estat filtrat per fonts oficials i interpolat
+        # Convertir Timestamp a datetime (si no ho és ja)
         if 'Timestamp' in df.columns:
             df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
         device = torch.device(gpu_device)
@@ -259,13 +247,8 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
             return
         edge_index, edge_attr = create_edge_index_and_attr(pos, x, k_neighbors, radius_quantile, edge_distance_scale)
         
-        # Portar resultats a CPU
-        x = x.cpu()
-        pos = pos.cpu()
-        edge_index = edge_index.cpu()
-        edge_attr = edge_attr.cpu()
-        
-        data = Data(x=x, pos=pos, edge_index=edge_index, edge_attr=edge_attr)
+        # Transferir resultats a CPU per guardar
+        data = Data(x=x.cpu(), pos=pos.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_attr.cpu())
         data.ids = list(df['id'])
         data.fonts = list(df['Font'])
         if 'Timestamp' in df.columns:
@@ -281,9 +264,12 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
         logging.error(f"Error en processar {file_path}: {e}")
 
 
-def process_all_files(input_root: str, output_root: str, max_workers: int, k_neighbors: int, radius_quantile: float, edge_distance_scale: float, use_metric: bool, exclude_temporal_norm: bool, gpu_device: str):
+def process_all_files(input_root: str, output_root: str, max_workers: int, k_neighbors: int,
+                      radius_quantile: float, edge_distance_scale: float, use_metric: bool,
+                      exclude_temporal_norm: bool, gpu_device: str):
     """
-    Recorre tots els fitxers CSV dins d'input_root (seguint criteris d'any i nom) i processa cada fitxer en paral·lel.
+    Recorre tots els fitxers CSV preprocesats dins d'input_root (seguint criteris d'any i nom)
+    i processa cada fitxer en paral·lel.
     """
     files_to_process = []
     for root_dir, dirs, files in os.walk(input_root):
@@ -305,7 +291,9 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
         print("No s'ha trobat cap fitxer que compleixi els criteris.")
         return
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_file, fp, input_root, output_root, k_neighbors, radius_quantile, edge_distance_scale, use_metric, exclude_temporal_norm, gpu_device): fp for fp in files_to_process}
+        futures = {executor.submit(process_file, fp, input_root, output_root, k_neighbors,
+                                     radius_quantile, edge_distance_scale, use_metric,
+                                     exclude_temporal_norm, gpu_device): fp for fp in files_to_process}
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processant fitxers", unit="fitxer"):
             try:
                 future.result()
@@ -323,8 +311,8 @@ def parse_args():
     parser.add_argument("--k_neighbors", type=int, default=DEFAULT_K_NEIGHBORS, help="Nombre de veïns per a knn_graph si num_nodes < 50.")
     parser.add_argument("--radius_quantile", type=float, default=DEFAULT_RADIUS_QUANTILE, help="Quantil per calcular el radi en radius_graph si num_nodes >= 50.")
     parser.add_argument("--edge_distance_scale", type=float, default=DEFAULT_EDGE_DISTANCE_SCALE, help="Factor per escalar la distància d'aresta (ex: dividir per 100 km).")
-    parser.add_argument("--use_metric_pos", action="store_true", help="Si s'activa, converteix les coordenades (lat, lon, Alt) a coordenades mètriques en km per construir el graf.")
-    parser.add_argument("--exclude_temporal_norm", action="store_true", help="Si s'activa, les features temporals (hora, dia) no es normalitzen per conservar el seu valor cíclic.")
+    parser.add_argument("--use_metric_pos", action="store_true", help="Si s'activa, converteix les coordenades (lat, lon, Alt) a coordenades mètriques en km.")
+    parser.add_argument("--exclude_temporal_norm", action="store_true", help="Si s'activa, les features temporals no es normalitzen per conservar el seu valor cíclic.")
     parser.add_argument("--gpu_device", type=str, default="cuda:0", help="Dispositiu GPU a utilitzar (per exemple, 'cuda:0').")
     return parser.parse_args()
 
@@ -335,6 +323,7 @@ def main():
     process_all_files(args.input_root, args.output_root, args.max_workers, args.k_neighbors,
                       args.radius_quantile, args.edge_distance_scale, args.use_metric_pos,
                       args.exclude_temporal_norm, args.gpu_device)
+
 
 if __name__ == "__main__":
     main()
