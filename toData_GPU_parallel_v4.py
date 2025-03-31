@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-toData_GPU_parallel_v6.py
+toData_GPU_parallel_v4.py
 
 Script per convertir fitxers CSV preprocessats (per prep_GPU_parallel.py)
 en objectes Data de torch_geometric per alimentar el model MeteoGraphSAGE (GraphSAGE).
