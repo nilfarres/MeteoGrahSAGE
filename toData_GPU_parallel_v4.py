@@ -255,11 +255,14 @@ def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_q
     edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
     diff_temp = (x[src, 0] - x[dst, 0]).unsqueeze(1)
     diff_humitat = (x[src, 1] - x[dst, 1]).unsqueeze(1)
+    diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
     diff_ventFor = (x[src, 3] - x[dst, 3]).unsqueeze(1)
     diff_patm = (x[src, 4] - x[dst, 4]).unsqueeze(1)
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_ventFor, diff_patm], dim=1)
+    diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
+    diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, diff_ventDir_sin, diff_ventDir_cos], dim=1)
     rev_edge_index = directed_edge_index[[1, 0]]
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_ventFor, -diff_patm], dim=1)
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     return full_edge_index, full_edge_attr
@@ -304,12 +307,15 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
     diff_temp = (x[src, 0] - x[dst, 0]).unsqueeze(1)
     diff_humitat = (x[src, 1] - x[dst, 1]).unsqueeze(1)
+    diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
     diff_ventFor = (x[src, 3] - x[dst, 3]).unsqueeze(1)
     diff_patm = (x[src, 4] - x[dst, 4]).unsqueeze(1)
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_ventFor, diff_patm], dim=1)
+    diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
+    diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, diff_ventDir_sin, diff_ventDir_cos], dim=1)
     
     rev_edge_index = directed_edge_index[[1, 0]]
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_ventFor, -diff_patm], dim=1)
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     
