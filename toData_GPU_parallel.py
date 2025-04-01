@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
 """
-toData_GPU_parallel_v4.py
+toData_GPU_parallel.py
 
 Script per convertir fitxers CSV preprocessats (per prep_GPU_parallel.py)
 en objectes Data de torch_geometric per alimentar el model MeteoGraphSAGE (GraphSAGE).
 
-Incorpora millores en:
-  - Normalització de features amb emmagatzematge de paràmetres.
-  - Codificació trigonomètrica de variables temporals i de vent, amb opcions addicionals.
-  - Conversió opcional de posicions a coordenades cartesianes 3D (km).
-  - Construcció del graf amb estratègies deterministes (k-NN o radius), duplicitat amb gradients signats,
-    connexió de nodes aïllats, arestes multiescala, filtrat per diferència d'altitud i edge weighting.
-  - Gestió avançada de la paral·lelització en GPU (assignació de GPU per procés).
-  - Fault tolerance i resum final, amb opcions per agrupar resultats per període i analitzar cobertura de nodes.
-  - Opcionalment, afegir un embedding d’ID d’estació i generar seqüències temporals.
-
 Exemples d'execució:
-  python toData_GPU_parallel_v6.py --input_root "/path/to/input" --output_root "/path/to/output" \
+  python toData_GPU_parallel.py --input_root "/path/to/input" --output_root "/path/to/output" \
     --gpu_devices "cuda:0,cuda:1" --max_workers 4 --group_by_period "day" --node_coverage_analysis
 
 Autor: Nil Farrés Soler
