@@ -8,7 +8,7 @@ Aquest codi:
     (format: "YYYY-MM-DD HH:00:00"); si l'hora extreta és ≥ 24, s'omet el fitxer.
   - Filtra les dades per mantenir només les fonts oficials (segons la llista FONTS_OFICIALS).
   - Selecciona les columnes d'interès:
-       * Per als fitxers dels anys 2016-2023: ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt',
+       * Per als fitxers dels anys 2016-2024: ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt',
          'VentDir', 'VentFor', 'Patm', 'lat', 'lon']
        * Per als fitxers de l'any 2015 (que poden no tenir 'Patm'): ['id', 'Font', 'Temp', 'Humitat',
          'Pluja', 'Alt', 'VentDir', 'VentFor', 'lat', 'lon']
@@ -62,7 +62,7 @@ FONTS_OFICIALS = [
 ]
 
 # Anys per a interpolació i anys que es pre-processaran
-YEARS_FOR_INTERPOLATION = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023]
+YEARS_FOR_INTERPOLATION = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 PROCESSED_YEARS = [year for year in YEARS_FOR_INTERPOLATION if year >= 2016]
 
 # Diccionari per emmagatzemar en caché els fitxers llegits (per cada procés)
