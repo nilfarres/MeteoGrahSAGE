@@ -35,6 +35,7 @@ from torch_geometric.utils import remove_duplicate_edges
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import networkx as nx
+import calendar
 
 # Configuració per defecte
 DEFAULT_INPUT_ROOT = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
@@ -68,13 +69,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 
 def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Afegeix features temporals cícliques a partir del Timestamp."""
     if not np.issubdtype(df['Timestamp'].dtype, np.datetime64):
         df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     df['hora_sin'] = np.sin(2 * np.pi * df['Timestamp'].dt.hour / 24)
     df['hora_cos'] = np.cos(2 * np.pi * df['Timestamp'].dt.hour / 24)
-    df['dia_sin'] = np.sin(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
-    df['dia_cos'] = np.cos(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / 365)
+    # Calcular el nombre de dies de l'any per cada timestamp
+    df['days_in_year'] = df['Timestamp'].dt.year.apply(lambda y: 366 if calendar.isleap(y) else 365)
+    df['dia_sin'] = np.sin(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / df['days_in_year'])
+    df['dia_cos'] = np.cos(2 * np.pi * (df['Timestamp'].dt.dayofyear - 1) / df['days_in_year'])
+    df.drop(columns=['days_in_year'], inplace=True)
     return df
 
 
