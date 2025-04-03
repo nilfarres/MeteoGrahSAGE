@@ -26,17 +26,24 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import networkx as nx
 import calendar
+import json
+from typing import Tuple
 
 # Configuració per defecte
 DEFAULT_INPUT_ROOT = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
 DEFAULT_OUTPUT_ROOT = "D:/DADES_METEO_PC_TO_DATA"
 DEFAULT_MAX_WORKERS = 8
+
 DEFAULT_K_NEIGHBORS = 5
-DEFAULT_RADIUS_QUANTILE = 0.75
+
+DEFAULT_RADIUS_QUANTILE = 0.15
+DEFAULT_MULTISCALE_RADIUS_QUANTILE = 0.65
+
 DEFAULT_EDGE_DISTANCE_SCALE = 100.0
-DEFAULT_MULTISCALE_RADIUS_QUANTILE = 0.95
 DEFAULT_EDGE_DECAY_LENGTH = 50.0
 DEFAULT_PRESSURE_REF = 1013.0
+
+DEFAULT_MAX_ALT_DIFF = 0.8  # 800 m convertit a km
 
 # Columnes requerides i fonts fiables
 REQUIRED_COLUMNS = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon', 'Timestamp']
@@ -44,9 +51,10 @@ OFFICIAL_SOURCES = ["Aemet", "METEOCAT", "METEOCAT_WEB", "Meteoclimatic", "Valls
                     "SAIH", "avamet", "Meteoprades", "MeteoPirineus", "WLINK_DAVIS"]
 
 # Features finals dels nodes
-FEATURE_COLUMNS = ['Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt',
-                   'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos', 'dia_sin', 'dia_cos']
-TEMPORAL_FEATURES = ['hora_sin', 'hora_cos', 'dia_sin', 'dia_cos']
+FEATURE_COLUMNS = ['Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
+                   'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos', 'dia_sin', 
+                   'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp']
+TEMPORAL_FEATURES = ['hora_sin', 'hora_cos', 'dia_sin', 'dia_cos', 'cos_sza']
 
 YEARS_FOR_INTERPOLATION = [2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]
 PROCESSED_YEARS = [year for year in YEARS_FOR_INTERPOLATION if year >= 2016]
@@ -70,63 +78,201 @@ def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df.drop(columns=['days_in_year'], inplace=True)
     return df
 
+def add_solar_features(df: pd.DataFrame) -> pd.DataFrame:
+    if not np.issubdtype(df['Timestamp'].dtype, np.datetime64):
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    
+    # Convertir latitud a radians
+    lat_rad = np.deg2rad(df['lat'])
+    
+    # Obtenir el dia de l'any per cada fila
+    day_of_year = df['Timestamp'].dt.dayofyear
 
-def encode_wind_direction(df: pd.DataFrame, add_components: bool) -> pd.DataFrame:
-    """Converteix 'VentDir' a 'VentDir_sin' i 'VentDir_cos'; opcionalment, afegeix components zonal/meridional."""
+    # Calcular la declinació solar en graus i després convertir-la a radians
+    dec_deg = 23.44 * np.sin(2 * np.pi * (284 + day_of_year) / 365)
+    dec_rad = np.deg2rad(dec_deg)
+    
+    # Calcular l'angle hora (HRA)
+    # Aquí, assumim que el Timestamp és en UTC, per la qual cosa ajustem afegint lon/15 per obtenir l'hora solar local.
+    # A més, s'aplica el mòdul 24 per mantenir l'hora dins del rang [0,24).
+    hour_local = (df['Timestamp'].dt.hour + df['Timestamp'].dt.minute / 60.0 + df['lon'] / 15.0) % 24
+    # HRA en graus: cada hora (fora del migdia) representa 15°
+    HRA_deg = (hour_local - 12) * 15
+    HRA_rad = np.deg2rad(HRA_deg)
+    
+    # Calcular cos(SZA)
+    df['cos_sza'] = np.sin(lat_rad) * np.sin(dec_rad) + np.cos(lat_rad) * np.cos(dec_rad) * np.cos(HRA_rad)
+    
+    return df
+
+def add_potential_temperature(df: pd.DataFrame, pressure_ref: float) -> pd.DataFrame:
+    """
+    Calcula la temperatura potencial en Kelvin utilitzant Temp ja convertida a Kelvin.
+    La fórmula és: θ = T * (P₀ / P)^(R/cₚ), amb R/cₚ ≈ 0.286.
+    """
+    # Suposem que df['Patm'] encara conté la pressió mesurada (sense la referència restada)
+    # i Temp ja és en Kelvin
+    df['PotentialTemp'] = df['Temp'] * (pressure_ref / df['Patm'])**0.286
+    return df
+
+def add_dew_point(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcula el punt de rosada a partir de la temperatura (Temp) i la humitat relativa (Humitat).
+    S'assumeix que Temp està en Kelvin i Humitat en %.
+    Utilitza la fórmula de Magnus per obtenir el punt de rosada en °C i, a continuació, el converteix a Kelvin.
+    """
+    a = 17.27
+    b = 237.7
+    # Converteix Temp de Kelvin a Celsius
+    T_c = df['Temp'] - 273.15
+    # Calcula alpha segons la fórmula de Magnus
+    alpha = np.log(df['Humitat'] / 100.0) + (a * T_c) / (b + T_c)
+    # Calcula el punt de rosada en Celsius
+    dewpoint_c = (b * alpha) / (a - alpha)
+    # Converteix el punt de rosada a Kelvin
+    df['DewPoint'] = dewpoint_c + 273.15
+    return df
+
+def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.DataFrame:
+    """
+    Converteix 'VentDir' a 'VentDir_sin' i 'VentDir_cos'.
+    Si VentFor és 0, s'estableixen VentDir_sin i VentDir_cos a 0 per indicar direcció indefinida.
+    Opcionalment, afegeix components zonal/meridional.
+    """
     if df['VentDir'].dtype == object:
         mapping = {
             'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
             'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5,
             'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5,
             'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5,
-            'Calma': 0  # Valor especial per vent en calma
+            'Calma': 0
         }
         df['VentDir'] = df['VentDir'].map(mapping)
     df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
     df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
+    
+    # Si la velocitat del vent és zero, estableix les components de direcció a 0
+    df.loc[df['VentFor'] == 0, 'VentDir_sin'] = 0.0
+    df.loc[df['VentFor'] == 0, 'VentDir_cos'] = 0.0
+    
     if add_components:
         df['Vent_u'] = df['VentFor'] * df['VentDir_cos']
         df['Vent_v'] = df['VentFor'] * df['VentDir_sin']
-        # Opcionalment es poden afegir a FEATURE_COLUMNS i gestionar-ho al vector x
+    # Eliminar la columna original
     df.drop(columns=['VentDir'], inplace=True)
     return df
 
 
-def custom_normalize_features(x: torch.Tensor, feature_names: list, exclude_names: list):
+def custom_normalize_features(x: torch.Tensor, feature_names: list, exclude_names: list, norm_params: dict = None):
     """
-    Normalitza les columnes de x que no estan a exclude_names i retorna els paràmetres.
+    Normalitza les columnes de x que no estan a exclude_names.
+    Si 'norm_params' està definit, utilitza els valors proporcionats;
+    en cas contrari, calcula la mitjana i desviació a partir de 'x'.
+    Retorna el tensor normalitzat i el diccionari de paràmetres.
     """
     x_norm = x.clone()
-    norm_params = {}
-    for i, name in enumerate(feature_names):
-        if name in exclude_names:
-            continue
-        col = x[:, i]
-        mean = col.mean().item()
-        std = col.std().item()
-        if std == 0:
-            std = 1
-        x_norm[:, i] = (col - mean) / std
-        norm_params[name] = {'mean': mean, 'std': std}
-    return x_norm, norm_params
+    computed_params = {}
+
+    if norm_params is None:
+        # Calcular per cada fitxer (no recomanat per a training final)
+        for i, name in enumerate(feature_names):
+            if name in exclude_names:
+                continue
+            col = x[:, i]
+            mean = col.mean().item()
+            std = col.std().item()
+            if std == 0:
+                std = 1
+            x_norm[:, i] = (col - mean) / std
+            computed_params[name] = {'mean': mean, 'std': std}
+        return x_norm, computed_params
+    else:
+        # Utilitzar els paràmetres globals precomputats
+        for i, name in enumerate(feature_names):
+            if name in exclude_names:
+                continue
+            mean = norm_params[name]['mean']
+            std = norm_params[name]['std']
+            x_norm[:, i] = (x[:, i] - mean) / std
+        return x_norm, norm_params
+
 
 
 def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind_components: bool,
-                         pressure_ref: float, log_transform_pluja: bool, add_station_id_feature: bool) -> (torch.Tensor, dict):
+                         pressure_ref: float, log_transform_pluja: bool, add_station_id_feature: bool, 
+                         precomputed_norm_params: dict = None) -> Tuple[torch.Tensor, dict]:
     """
     Crea el tensor de features dels nodes.
-    - Afegeix features temporals.
-    - Codifica el vent i opcionalment afegeix components zonal/meridional.
-    - Aplica transformació logarítmica a 'Pluja' i normalitza la pressió restant pressure_ref.
+    
+    - Afegeix features temporals (hora_sin, hora_cos, dia_sin, dia_cos, cos_sza).
+    - Codifica la direcció del vent en components trigonomètriques i, opcionalment, afegeix les components zonal/meridional.
+    - Converteix la temperatura (Temp) de °C a Kelvin.
+    - Calcula indicadors derivats: el punt de rosada (DewPoint) i la temperatura potencial (PotentialTemp).
+    - Aplica la transformació logarítmica a 'Pluja' si s'indica, i normalitza la pressió restant-hi pressure_ref.
     - Opcionalment, afegeix una característica basada en l'ID d'estació.
+    
     Retorna el tensor de features i els paràmetres de normalització.
     """
+
     if 'Timestamp' in df.columns:
         df = add_cyclical_time_features(df)
+        df = add_solar_features(df)
+
     df = encode_wind_direction(df, add_wind_components)
+
+    # Converteix la temperatura de ºC a Kelvin
+    df['Temp'] = df['Temp'] + 273.15
+
+    # Afegeix el punt de rosada (DewPoint) i la temperatura potencial (PotentialTemp)
+    # (La funció add_dew_point assumeix que Temp està en Kelvin i retorna el valor en Kelvin)
+    df = add_dew_point(df)
+    # La funció add_potential_temperature assumeix que Temp ja està en Kelvin
+    df = add_potential_temperature(df, pressure_ref)
+
     if log_transform_pluja:
         df['Pluja'] = np.log1p(df['Pluja'])
+        
     df['Patm'] = df['Patm'] - pressure_ref
+
+    # Si s'ha activat add_wind_components, afegim Vent_u i Vent_v a FEATURE_COLUMNS
+    if add_wind_components:
+        if 'Vent_u' not in df.columns:
+            # En principi, ja s'hauria calculat dins de encode_wind_direction,
+            # però en cas contrari, es pot calcular així:
+            df['Vent_u'] = df['VentFor'] * df['VentDir_cos']
+        if 'Vent_v' not in df.columns:
+            df['Vent_v'] = df['VentFor'] * df['VentDir_sin']
+        # Assegurar-se que FEATURE_COLUMNS inclou aquestes noves columnes
+        if 'Vent_u' not in FEATURE_COLUMNS:
+            FEATURE_COLUMNS.append('Vent_u')
+        if 'Vent_v' not in FEATURE_COLUMNS:
+            FEATURE_COLUMNS.append('Vent_v')
+
+    # Assegurem que FEATURE_COLUMNS inclou les noves variables derivades
+    if 'DewPoint' not in FEATURE_COLUMNS:
+        FEATURE_COLUMNS.append('DewPoint')
+    if 'PotentialTemp' not in FEATURE_COLUMNS:
+        FEATURE_COLUMNS.append('PotentialTemp')
+
+    if 'Alt_norm' not in df.columns:
+        # Definim uns valors de referència per l'altitud:
+        # Mitjana
+        # Altitud mitjana de Catalunya: 700m
+        # Altitud mitjana País Valencià: 363m
+        # Altitud mitjana Illes Balears: 300m
+        # 700 + 363 + 300 = 1363 / 3 = 454.3m -> Aquesta és la mitjana d'altitud dels Països Catalans que utilitzarem
+        # Desviació estàndard
+        # Primer calculem la diferència de cada valor respecte a la mitjana i elevem al quadrat.
+        # Catalunya: 700 - 454 = 246 -> 246^2 = 60516
+        # País Valencià: 363 - 454 = -91 -> (-91)^2 = 8281
+        # Illes Balears: 300 - 454 = -154 -> (-154)^2 = 23716
+        # Suma dels quadrats: 60516 + 8281 + 23716 = 92513
+        # La variància és la suma dels quadrats dividida pel nombre de valors (3): 92513 / 3 = 30837.66667
+        # La desviació estàndard és l'arrel quadrada de la variància: sqrt(30837.66667) = 175.61 -> Aquesta és la desviació estàndard que utilitzarem
+        alt_mean = 454.3
+        alt_std = 175.61
+        df['Alt_norm'] = (df['Alt'] - alt_mean) / alt_std
+    
     if add_station_id_feature:
         # Crear una característica numèrica basada en l'ID; per exemple, mapear l'ID a un enter únic
         # Aquí simplement assignem un index segons l'ordre d'aparició
@@ -134,15 +280,18 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
         # Afegir aquesta nova columna a FEATURE_COLUMNS si no hi és
         if 'StationID' not in FEATURE_COLUMNS:
             FEATURE_COLUMNS.append('StationID')
+
     missing = set(FEATURE_COLUMNS) - set(df.columns)
     if missing:
         logging.error(f"Columns missing: {missing}")
         raise ValueError("Missing feature columns in dataframe.")
+    
     x = torch.tensor(df[FEATURE_COLUMNS].values, dtype=torch.float)
+
     if exclude_temporal_norm:
-        x_norm, norm_params = custom_normalize_features(x, FEATURE_COLUMNS, TEMPORAL_FEATURES)
+        x_norm, norm_params = custom_normalize_features(x, FEATURE_COLUMNS, TEMPORAL_FEATURES, precomputed_norm_params)
     else:
-        x_norm, norm_params = custom_normalize_features(x, FEATURE_COLUMNS, [])
+        x_norm, norm_params = custom_normalize_features(x, FEATURE_COLUMNS, [], precomputed_norm_params)
     return x_norm, norm_params
 
 
@@ -200,6 +349,13 @@ def compute_geodesic_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> t
     distance = torch.sqrt(horizontal_distance**2 + alt_diff**2)
     return distance.unsqueeze(1)
 
+def compute_euclidean_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> torch.Tensor:
+    """
+    Calcula la distància euclidiana entre dos vectors de posicions (assumint que estan en un espai 3D euclidià).
+    Retorna la distància en km com un tensor de mida (N, 1).
+    """
+    distance = torch.norm(pos_src - pos_dst, p=2, dim=1, keepdim=True)
+    return distance
 
 def ensure_connectivity(edge_index: torch.Tensor, pos: torch.Tensor, k_neighbors: int) -> torch.Tensor:
     """
@@ -223,7 +379,8 @@ def ensure_connectivity(edge_index: torch.Tensor, pos: torch.Tensor, k_neighbors
     return edge_index
 
 
-def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_quantile: float, edge_distance_scale: float):
+def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_quantile: float, 
+                         edge_distance_scale: float, use_metric: bool):
     """
     Crea un segon conjunt d’arestes amb quantil superior per connexions regionals i duplica per obtenir
     informació en ambdues direccions.
@@ -242,7 +399,12 @@ def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_q
     
     src = directed_edge_index[0]
     dst = directed_edge_index[1]
-    edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
+
+    if use_metric:
+        edge_attr_dist = compute_euclidean_distance(pos[src], pos[dst]) / edge_distance_scale
+    else:
+        edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
+
     diff_temp = (x[src, 0] - x[dst, 0]).unsqueeze(1)
     diff_humitat = (x[src, 1] - x[dst, 1]).unsqueeze(1)
     diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
@@ -261,14 +423,15 @@ def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_q
 def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: int,
                                radius_quantile: float, edge_distance_scale: float,
                                add_multiscale: bool, multiscale_radius_quantile: float,
-                               max_alt_diff: float, add_edge_weight: bool, edge_decay_length: float) -> (torch.Tensor, torch.Tensor):
+                               max_alt_diff: float, add_edge_weight: bool, edge_decay_length: float,
+                               use_metric: bool) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Construeix l'edge_index i edge_attr del graf amb les millores:
       - Selecció determinista (ordenació per latitud) per radius o knn.
-      - Duplicitat d’arestes amb gradients signats.
+      - Duplicitat d'arestes amb gradients signats.
       - Garantir connectivitat.
       - Opcionalment, afegir arestes multiescala.
-      - Opcionalment, filtrar per diferència d’altitud.
+      - Opcionalment, filtrar per diferència d'altitud.
       - Opcionalment, afegir edge weighting.
     """
     num_nodes = pos.size(0)
@@ -294,18 +457,24 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     
     src = directed_edge_index[0]
     dst = directed_edge_index[1]
-    edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
+
+    if use_metric:
+        edge_attr_dist = compute_euclidean_distance(pos[src], pos[dst]) / edge_distance_scale
+    else:
+        edge_attr_dist = compute_geodesic_distance(pos[src], pos[dst]) / edge_distance_scale
+
     diff_temp = (x[src, 0] - x[dst, 0]).unsqueeze(1)
     diff_humitat = (x[src, 1] - x[dst, 1]).unsqueeze(1)
     diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
     diff_ventFor = (x[src, 3] - x[dst, 3]).unsqueeze(1)
     diff_patm = (x[src, 4] - x[dst, 4]).unsqueeze(1)
+    abs_diff_alt = torch.abs(x[src, 5] - x[dst, 5]).unsqueeze(1) # Diferència absoluta d’altitud
     diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
     diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, diff_ventDir_sin, diff_ventDir_cos], dim=1)
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, abs_diff_alt, diff_ventDir_sin, diff_ventDir_cos], dim=1)
     
     rev_edge_index = directed_edge_index[[1, 0]]
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, abs_diff_alt, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     
@@ -331,6 +500,42 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     return full_edge_index, full_edge_attr
 
 
+def compute_graph_metadata(data):
+    # Grau mitjà: nombre total d'arestes (dividit per 2, ja que cada aresta apareix dues vegades) dividit pel nombre de nodes.
+    num_nodes = data.x.size(0)
+    num_edges = data.edge_index.size(1) // 2  # Ja que s'han concatenat les arestes inverses.
+    mean_degree = (num_edges * 2) / num_nodes  if num_nodes > 0 else 0
+    
+    # Radi efectiu: mitjana de la primera columna d'edge_attr (assumint que és la distància geodèsica escalada).
+    effective_radius = data.edge_attr[:, 0].mean().item() if data.edge_attr.size(0) > 0 else 0
+    
+    return {"mean_degree": mean_degree, "effective_radius": effective_radius}
+
+
+def sanity_check_node(data, node_index, num_neighbors=5):
+    """
+    Realitza un control de qualitat per a un node donat.
+    Llista els primers 'num_neighbors' veïns del node i mostra informació rellevant.
+    """
+    # Trobar els indices on el node és origen
+    mask = data.edge_index[0] == node_index
+    neighbors = data.edge_index[1][mask]
+    
+    # Si no té veïns, notifica-ho
+    if neighbors.numel() == 0:
+        print(f"El node {node_index} no té veïns.")
+        return
+    
+    print(f"Node {node_index} té {neighbors.numel()} veïns. Mostrant els primers {num_neighbors}:")
+    for i, neighbor in enumerate(neighbors[:num_neighbors]):
+        # Mostrar informació bàsica: id del node veí i la distància de l'aresta
+        edge_mask = (data.edge_index[0] == node_index) & (data.edge_index[1] == neighbor)
+        edge_attr = data.edge_attr[edge_mask]
+        # Suposant que la primera columna d'edge_attr és la distància geodèsica escalada
+        distance = edge_attr[0, 0].item() if edge_attr.size(0) > 0 else None
+        print(f"  Veí {i+1}: Node {neighbor.item()} amb distància: {distance:.2f}")
+
+
 def assign_gpu_device(file_idx: int, gpu_devices: list) -> str:
     """
     Assigna un dispositiu GPU per a cada fitxer basant-se en l'índex del fitxer (round-robin).
@@ -343,10 +548,11 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
                  exclude_temporal_norm: bool, gpu_device: str, add_multiscale: bool,
                  multiscale_radius_quantile: float, max_alt_diff: float, add_edge_weight: bool,
                  edge_decay_length: float, pressure_ref: float, log_transform_pluja: bool,
-                 add_wind_components: bool, include_year_feature: bool):
+                 add_wind_components: bool, include_year_feature: bool, 
+                 precomputed_norm_params: dict = None):
     """
     Processa un fitxer CSV preprocessat per convertir-lo en un objecte Data.
-    Es assumeix que el CSV ja està net.
+    S'assumeix que el CSV ja està net.
     """
     try:
         df = pd.read_csv(file_path)
@@ -356,7 +562,8 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
         if 'Timestamp' in df.columns:
             df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
         device = torch.device(gpu_device)
-        x, norm_params = create_node_features(df, exclude_temporal_norm, add_wind_components, pressure_ref, log_transform_pluja, add_station_id_feature=False)
+        x, norm_params = create_node_features(df, exclude_temporal_norm, add_wind_components, pressure_ref, log_transform_pluja, 
+                                              add_station_id_feature=False, precomputed_norm_params=precomputed_norm_params)
         pos = create_position_tensor(df, use_metric).to(device)
         x = x.to(device)
         num_nodes = x.size(0)
@@ -365,7 +572,7 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
             return {"status": "skip", "file": file_path}
         edge_index, edge_attr = create_edge_index_and_attr(pos, x, k_neighbors, radius_quantile,
                                                            edge_distance_scale, add_multiscale, multiscale_radius_quantile,
-                                                           max_alt_diff, add_edge_weight, edge_decay_length)
+                                                           max_alt_diff, add_edge_weight, edge_decay_length, use_metric)
         data = Data(x=x.cpu(), pos=pos.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_attr.cpu())
         data.ids = list(df['id'])
         data.fonts = list(df['Font'])
@@ -374,6 +581,15 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
             if include_year_feature:
                 data.year = int(df['Timestamp'].dt.year.iloc[0])
         data.norm_params = norm_params
+
+        # Afegir metadades del graf per documentar-lo
+        meta = compute_graph_metadata(data)
+        data.meta = meta
+        logging.info(f"Metadades del graf: Grau mitjà = {meta['mean_degree']:.2f}, Radi efectiu = {meta['effective_radius']:.2f}")
+
+        # Opcional: Realitzar una validació de sanity check per a un node específic (exemple: primer node)
+        sanity_check_node(data, node_index=0, num_neighbors=5)
+        
         # Afegir, opcionalment, l'índex de node (per futurs embeddings)
         rel_path = os.path.relpath(file_path, input_root)
         rel_path_pt = rel_path.replace("dadesPC_utc.csv", "pt")
@@ -393,7 +609,8 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
                       multiscale_radius_quantile: float, max_alt_diff: float, add_edge_weight: bool,
                       edge_decay_length: float, pressure_ref: float, log_transform_pluja: bool,
                       add_wind_components: bool, include_year_feature: bool, group_by_period: str,
-                      generate_sequence: bool, node_coverage_analysis: bool):
+                      generate_sequence: bool, node_coverage_analysis: bool,
+                      precomputed_norm_params: dict = None):
     """
     Processa tots els fitxers CSV preprocessats dins d'input_root en paral·lel i
     opcionalment agrupa els resultats per període o genera seqüències temporals.
@@ -430,7 +647,8 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
                                       exclude_temporal_norm, assigned_gpu, add_multiscale,
                                       multiscale_radius_quantile, max_alt_diff, add_edge_weight,
                                       edge_decay_length, pressure_ref, log_transform_pluja,
-                                      add_wind_components, include_year_feature)] = fp
+                                      add_wind_components, include_year_feature,
+                                      precomputed_norm_params)] = fp
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processant fitxers", unit="fitxer"):
             results.append(future.result())
     # Resum final
@@ -550,7 +768,7 @@ def parse_args():
     parser.add_argument("--gpu_devices", type=str, default="cuda:0", help="Llista de dispositius GPU separats per comes (ex: 'cuda:0,cuda:1').")
     parser.add_argument("--add_multiscale", action="store_true", help="Si s'activa, s'afegeixen arestes multiescala.")
     parser.add_argument("--multiscale_radius_quantile", type=float, default=DEFAULT_MULTISCALE_RADIUS_QUANTILE, help="Quantil per arestes multiescala.")
-    parser.add_argument("--max_alt_diff", type=float, default=None, help="Màxim diferència d'altitud (en km) per permetre una aresta.")
+    parser.add_argument("--max_alt_diff", type=float, default=DEFAULT_MAX_ALT_DIFF, help="Màxim diferència d'altitud (en km) per permetre una aresta.")
     parser.add_argument("--add_edge_weight", action="store_true", help="Si s'activa, s'afegeix un pes a cada aresta.")
     parser.add_argument("--edge_decay_length", type=float, default=DEFAULT_EDGE_DECAY_LENGTH, help="Longitud de decaïment per edge weighting (en km).")
     parser.add_argument("--pressure_ref", type=float, default=DEFAULT_PRESSURE_REF, help="Valor de referència per normalitzar la pressió (hPa).")
@@ -560,11 +778,19 @@ def parse_args():
     parser.add_argument("--group_by_period", type=str, choices=GROUP_BY_PERIOD_CHOICES, default="none", help="Agrupa els resultats per període ('day' o 'month').")
     parser.add_argument("--generate_sequence", action="store_true", help="Si s'activa, genera seqüències temporals (una per període) amb els Data objects.")
     parser.add_argument("--node_coverage_analysis", action="store_true", help="Si s'activa, analitza la cobertura de nodes i genera un informe.")
+    parser.add_argument("--PC_norm_params", type=str, default=None, help="Path al fitxer JSON amb paràmetres dels Països Catalans de normalització.")
+    
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
+
+    # Carregar els parametres dels Paisos Catalans si s'ha proporcionat
+    PC_norm_params = None
+    if args.global_norm_params is not None:
+        with open(args.PC_norm_params, 'r') as f:
+            PC_norm_params = json.load(f)
+
     logging.info(f"Iniciant processament amb input_root={args.input_root} i output_root={args.output_root}")
     gpu_devices = parse_gpu_devices(args.gpu_devices)
     process_all_files(args.input_root, args.output_root, args.max_workers, args.k_neighbors,
@@ -573,7 +799,8 @@ def main():
                       args.multiscale_radius_quantile, args.max_alt_diff, args.add_edge_weight,
                       args.edge_decay_length, args.pressure_ref, args.log_transform_pluja,
                       args.add_wind_components, args.include_year_feature, args.group_by_period,
-                      args.generate_sequence, args.node_coverage_analysis)
+                      args.generate_sequence, args.node_coverage_analysis,
+                      precomputed_norm_params=PC_norm_params)
 
 
 if __name__ == "__main__":
