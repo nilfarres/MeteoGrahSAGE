@@ -379,10 +379,28 @@ def ensure_connectivity(edge_index: torch.Tensor, pos: torch.Tensor, k_neighbors
     return edge_index
 
 
+def compute_bearing_torch(lat1, lon1, lat2, lon2):
+    """
+    Calcula l'azimut (bearing) inicial en graus des d'un punt (lat1, lon1) fins a un altre (lat2, lon2).
+    Es realitza la conversió de graus a radians i després s'aplica la fórmula:
+        bearing = arctan2(sin(Δlon)*cos(lat2), cos(lat1)*sin(lat2) - sin(lat1)*cos(lat2)*cos(Δlon))
+    El resultat s'ajusta al rang [0, 360).
+    """
+    lat1_rad = torch.deg2rad(lat1)
+    lat2_rad = torch.deg2rad(lat2)
+    dlon_rad = torch.deg2rad(lon2 - lon1)
+    x = torch.sin(dlon_rad) * torch.cos(lat2_rad)
+    y = torch.cos(lat1_rad) * torch.sin(lat2_rad) - torch.sin(lat1_rad) * torch.cos(lat2_rad) * torch.cos(dlon_rad)
+    initial_bearing = torch.atan2(x, y)  # En radians
+    initial_bearing_deg = torch.rad2deg(initial_bearing)
+    bearing = (initial_bearing_deg + 360) % 360
+    return bearing
+
+
 def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_quantile: float, 
                          edge_distance_scale: float, use_metric: bool):
     """
-    Crea un segon conjunt d’arestes amb quantil superior per connexions regionals i duplica per obtenir
+    Crea un segon conjunt d'arestes amb quantil superior per connexions regionals i duplica per obtenir
     informació en ambdues direccions.
     """
     num_nodes = pos.size(0)
@@ -410,11 +428,35 @@ def add_multiscale_edges(pos: torch.Tensor, x: torch.Tensor, multiscale_radius_q
     diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
     diff_ventFor = (x[src, 3] - x[dst, 3]).unsqueeze(1)
     diff_patm = (x[src, 4] - x[dst, 4]).unsqueeze(1)
+    abs_diff_alt = torch.abs(x[src, 5] - x[dst, 5]).unsqueeze(1)
     diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
     diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, diff_ventDir_sin, diff_ventDir_cos], dim=1)
+    diff_dewpoint = (x[src, 13] - x[dst, 13]).unsqueeze(1)
+    diff_potentialTemp = (x[src, 14] - x[dst, 14]).unsqueeze(1)
+
+    # Afegim el càlcul de l'azimut per les arestes multiescala
+    if not use_metric:
+        lat_src = pos[src, 0]
+        lon_src = pos[src, 1]
+        lat_dst = pos[dst, 0]
+        lon_dst = pos[dst, 1]
+        bearing = compute_bearing_torch(lat_src, lon_src, lat_dst, lon_dst)  # Resultat en graus
+        bearing_rad = torch.deg2rad(bearing)
+        bearing_sin = torch.sin(bearing_rad).unsqueeze(1)
+        bearing_cos = torch.cos(bearing_rad).unsqueeze(1)
+    else:
+        bearing_sin = torch.zeros_like(diff_temp)
+        bearing_cos = torch.zeros_like(diff_temp)
+
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, 
+                           diff_ventFor, diff_patm, abs_diff_alt,
+                           diff_ventDir_sin, diff_ventDir_cos, diff_dewpoint, diff_potentialTemp,
+                           bearing_sin, bearing_cos], dim=1)
     rev_edge_index = directed_edge_index[[1, 0]]
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, 
+                               -diff_ventFor, -diff_patm, abs_diff_alt,
+                               -diff_ventDir_sin, -diff_ventDir_cos, -diff_dewpoint, -diff_potentialTemp,
+                               -bearing_sin, -bearing_cos], dim=1)
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     return full_edge_index, full_edge_attr
@@ -433,6 +475,9 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
       - Opcionalment, afegir arestes multiescala.
       - Opcionalment, filtrar per diferència d'altitud.
       - Opcionalment, afegir edge weighting.
+      - Afegir l'azimut (representat com a sin i cos) entre nodes.
+      - Afegir també la diferència (o diferència absoluta) de variables nodals noves,
+        per exemple, la diferència de DewPoint i de PotentialTemp.
     """
     num_nodes = pos.size(0)
     if num_nodes < 2:
@@ -471,10 +516,36 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     abs_diff_alt = torch.abs(x[src, 5] - x[dst, 5]).unsqueeze(1) # Diferència absoluta d’altitud
     diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
     diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, abs_diff_alt, diff_ventDir_sin, diff_ventDir_cos], dim=1)
+    diff_dewpoint = (x[src, 13] - x[dst, 13]).unsqueeze(1)
+    diff_potentialTemp = (x[src, 14] - x[dst, 14]).unsqueeze(1)
+
+    # Afegim el càlcul de l'azimut (bearing) entre nodes
+    if not use_metric:
+        # Extreure latitud i longitud (en graus) dels nodes origen i destí
+        lat_src = pos[src, 0]
+        lon_src = pos[src, 1]
+        lat_dst = pos[dst, 0]
+        lon_dst = pos[dst, 1]
+        # Calcular l'azimut amb una funció definida (assumim que està definida: compute_bearing_torch)
+        bearing = compute_bearing_torch(lat_src, lon_src, lat_dst, lon_dst)  # resultat en graus [0, 360)
+        # Convertir a radians i obtenir sin i cos
+        bearing_rad = torch.deg2rad(bearing)
+        bearing_sin = torch.sin(bearing_rad).unsqueeze(1)
+        bearing_cos = torch.cos(bearing_rad).unsqueeze(1)
+    else:
+        # Si use_metric és True, podem assignar zeros o decidir no afegir aquesta característica
+        bearing_sin = torch.zeros_like(diff_temp)
+        bearing_cos = torch.zeros_like(diff_temp)
+
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, 
+                           abs_diff_alt, diff_ventDir_sin, diff_ventDir_cos, diff_dewpoint, diff_potentialTemp,
+                           bearing_sin, bearing_cos], dim=1)
     
     rev_edge_index = directed_edge_index[[1, 0]]
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, abs_diff_alt, -diff_ventDir_sin, -diff_ventDir_cos], dim=1)
+
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, 
+                               abs_diff_alt, -diff_ventDir_sin, -diff_ventDir_cos, -diff_dewpoint, -diff_potentialTemp,
+                               -bearing_sin, -bearing_cos], dim=1)
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     
