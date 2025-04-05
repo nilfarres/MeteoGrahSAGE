@@ -164,6 +164,9 @@ for file in all_files:
 
         df['Temp'] = df['Temp'] + 273.15
 
+        # Activar o descativar la línia de sota en funció de si es vol fer o no a toData_GPU_parallel.py
+        df['Pluja'] = np.log1p(df['Pluja'])
+
         pressure_ref = 1013.0
         df = add_dew_point(df)
         df = add_potential_temperature(df, pressure_ref)
