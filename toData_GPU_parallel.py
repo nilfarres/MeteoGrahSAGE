@@ -245,6 +245,9 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
     # La funció add_potential_temperature assumeix que Temp ja està en Kelvin
     df = add_potential_temperature(df, pressure_ref)
 
+    # Reescalar la humitat de 0-100 a 0-1
+    df['Humitat'] = df['Humitat'] / 100.0
+
     if log_transform_pluja:
         # Aplicar transformació logarítmica a 'Pluja'
         # Converteix la columna 'Pluja' a numèrica i substitueix qualsevol error o NaN per 0
@@ -353,7 +356,7 @@ def create_position_tensor(df: pd.DataFrame, use_metric: bool) -> torch.Tensor:
 def compute_geodesic_distance(pos_src: torch.Tensor, pos_dst: torch.Tensor) -> torch.Tensor:
     """
     Calcula la distància geodèsica 3D entre dos vectors de posicions utilitzant Haversine
-    i la diferència d’altitud, retornant la distància en km.
+    i la diferència d'altitud, retornant la distància en km.
     """
     lat1 = torch.deg2rad(pos_src[:, 0])
     lon1 = torch.deg2rad(pos_src[:, 1])
@@ -649,6 +652,9 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
     """
     try:
         df = pd.read_csv(file_path)
+
+        # Converteix la columna 'VentFor' a numèrica i converteix de km/h a m/s
+        df['VentFor'] = pd.to_numeric(df['VentFor'], errors='coerce').fillna(0) / 3.6
         
         # Si no existeix la columna 'Timestamp', afegeix-la extreient-la del nom del fitxer
         if 'Timestamp' not in df.columns:
