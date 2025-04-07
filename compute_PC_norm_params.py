@@ -153,7 +153,7 @@ def process_df_for_norm(df: pd.DataFrame) -> pd.DataFrame:
     
     df = add_cyclical_time_features(df)
     df = add_solar_features(df)
-    df = encode_wind_direction(df, add_components=False)
+    df = encode_wind_direction(df, add_components=True)
     return df
 
 ##########################################
@@ -210,7 +210,7 @@ for file in tqdm(all_files, desc="Processant fitxers"):
 
         # Reescalar la humitat de 0-100 a 0-1
         df['Humitat'] = df['Humitat'] / 100.0
-        
+
         df['Patm'] = df['Patm'] - pressure_ref
 
         # Seleccionar les columnes definides per FEATURE_COLUMNS
