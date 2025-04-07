@@ -46,7 +46,7 @@ DEFAULT_PRESSURE_REF = 1013.0
 DEFAULT_MAX_ALT_DIFF = 0.8  # 800 m convertit a km
 
 # Columnes requerides i fonts fiables
-REQUIRED_COLUMNS = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon', 'Timestamp']
+REQUIRED_COLUMNS = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon']
 OFFICIAL_SOURCES = ["Aemet", "METEOCAT", "METEOCAT_WEB", "Meteoclimatic", "Vallsdaneu",
                     "SAIH", "avamet", "Meteoprades", "MeteoPirineus", "WLINK_DAVIS"]
 
@@ -64,6 +64,20 @@ GROUP_BY_PERIOD_CHOICES = ["none", "day", "month"]
 
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Suprimeix els warnings de divisió per zero
+np.seterr(divide='ignore')
+
+def extract_timestamp_from_filename(file_path: str) -> str:
+    """
+    Extreu el timestamp del nom del fitxer. Es suposa que el nom del fitxer és del format:
+    'YYYYMMDDHHdadesPC_utc.csv', i per tant, els 10 primers caràcters corresponen a 'YYYYMMDDHH'.
+    Retorna el timestamp en format 'YYYY-MM-DD HH:MM:SS'.
+    """
+    base = os.path.basename(file_path)
+    ts_str = base[:10]  # 'YYYYMMDDHH'
+    ts = datetime.strptime(ts_str, "%Y%m%d%H")
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -230,6 +244,12 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
     df = add_potential_temperature(df, pressure_ref)
 
     if log_transform_pluja:
+        # Aplicar transformació logarítmica a 'Pluja'
+        # Converteix la columna 'Pluja' a numèrica i substitueix qualsevol error o NaN per 0
+        df['Pluja'] = pd.to_numeric(df['Pluja'], errors='coerce').fillna(0)
+        # Assegura't que tots els valors siguin ≥ 0 (si algun és menor, el forcem a 0)
+        df['Pluja'] = np.maximum(df['Pluja'], 0)
+
         df['Pluja'] = np.log1p(df['Pluja'])
         
     df['Patm'] = df['Patm'] - pressure_ref
@@ -627,14 +647,24 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
     """
     try:
         df = pd.read_csv(file_path)
+        
+        # Si no existeix la columna 'Timestamp', afegeix-la extreient-la del nom del fitxer
+        if 'Timestamp' not in df.columns:
+            ts_str = extract_timestamp_from_filename(file_path)
+            df.insert(0, 'Timestamp', ts_str)
+        
+        # Comprova que el DataFrame tingui totes les columnes requerides (sense 'Timestamp')
         if not set(REQUIRED_COLUMNS).issubset(df.columns):
             logging.error(f"El fitxer {file_path} no conté totes les columnes requerides.")
             return {"status": "fail", "file": file_path}
-        if 'Timestamp' in df.columns:
-            df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+        
+        # Convertir la columna 'Timestamp' a datetime
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
+        
         device = torch.device(gpu_device)
-        x, norm_params = create_node_features(df, exclude_temporal_norm, add_wind_components, pressure_ref, log_transform_pluja, 
-                                              add_station_id_feature=False, precomputed_norm_params=precomputed_norm_params)
+        x, norm_params = create_node_features(df, exclude_temporal_norm, add_wind_components, pressure_ref,
+                                              log_transform_pluja, add_station_id_feature=False,
+                                              precomputed_norm_params=precomputed_norm_params)
         pos = create_position_tensor(df, use_metric).to(device)
         x = x.to(device)
         num_nodes = x.size(0)
@@ -642,15 +672,15 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
             logging.info(f"El fitxer {file_path} té menys d'una connexió possible (num_nodes={num_nodes}). S'omet.")
             return {"status": "skip", "file": file_path}
         edge_index, edge_attr = create_edge_index_and_attr(pos, x, k_neighbors, radius_quantile,
-                                                           edge_distance_scale, add_multiscale, multiscale_radius_quantile,
-                                                           max_alt_diff, add_edge_weight, edge_decay_length, use_metric)
+                                                           edge_distance_scale, add_multiscale,
+                                                           multiscale_radius_quantile, max_alt_diff,
+                                                           add_edge_weight, edge_decay_length, use_metric)
         data = Data(x=x.cpu(), pos=pos.cpu(), edge_index=edge_index.cpu(), edge_attr=edge_attr.cpu())
         data.ids = list(df['id'])
         data.fonts = list(df['Font'])
-        if 'Timestamp' in df.columns:
-            data.timestamp = df['Timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')
-            if include_year_feature:
-                data.year = int(df['Timestamp'].dt.year.iloc[0])
+        data.timestamp = df['Timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')
+        if include_year_feature:
+            data.year = int(df['Timestamp'].dt.year.iloc[0])
         data.norm_params = norm_params
 
         # Afegir metadades del graf per documentar-lo
