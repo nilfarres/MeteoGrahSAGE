@@ -168,6 +168,12 @@ data_list = []
 for file in tqdm(all_files, desc="Processant fitxers"):
     try:
         df = pd.read_csv(file)
+
+        df = pd.read_csv(file)
+
+        # Converteix la columna 'VentFor' a numèrica (si encara no ho és) i aplica la conversió a m/s
+        df['VentFor'] = pd.to_numeric(df['VentFor'], errors='coerce').fillna(0) / 3.6
+
         # Comprova que el fitxer tingui les columnes originals (sense 'Timestamp')
         required_cols = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon']
         if not set(required_cols).issubset(df.columns):
@@ -201,6 +207,10 @@ for file in tqdm(all_files, desc="Processant fitxers"):
         pressure_ref = 1013.0
         df = add_dew_point(df)
         df = add_potential_temperature(df, pressure_ref)
+
+        # Reescalar la humitat de 0-100 a 0-1
+        df['Humitat'] = df['Humitat'] / 100.0
+        
         df['Patm'] = df['Patm'] - pressure_ref
 
         # Seleccionar les columnes definides per FEATURE_COLUMNS
