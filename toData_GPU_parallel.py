@@ -5,6 +5,8 @@ toData_GPU_parallel.py
 Script per convertir fitxers CSV preprocessats (per prep_GPU_parallel.py)
 en objectes Data de torch_geometric per alimentar el model MeteoGraphSAGE (GraphSAGE).
 
+Aquest fitxer s'ha d'executar després de "prep_GPU_parallel.py" i "compute_PC_norm_params.py", en aquest ordre.
+
 Exemples d'execució:
   python toData_GPU_parallel.py --input_root "/path/to/input" --output_root "/path/to/output" \
     --gpu_devices "cuda:0,cuda:1" --max_workers 4 --group_by_period "day" --node_coverage_analysis
