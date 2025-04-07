@@ -23,7 +23,7 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph, radius_graph
-from torch_geometric.utils import remove_duplicate_edges
+#from torch_geometric.utils import remove_duplicate_edges
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import networkx as nx
@@ -896,7 +896,7 @@ def main():
 
     # Carregar els parametres dels Paisos Catalans si s'ha proporcionat
     PC_norm_params = None
-    if args.global_norm_params is not None:
+    if args.PC_norm_params is not None:
         with open(args.PC_norm_params, 'r') as f:
             PC_norm_params = json.load(f)
 
