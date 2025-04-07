@@ -3,15 +3,18 @@
 compute_PC_norm_params.py
 
 Script per calcular els paràmetres de normalització dels Països Catalans (mitjana i desviació estàndard)
-per als features dels nodes a partir dels fitxers CSV preprocessats (sortida de prep_GPU_parallel.py).
+per a les característiques dels nodes que es crearan a "toData_GPU_parallel.py" a partir dels fitxers CSV 
+preprocessats (sortida de "prep_GPU_parallel.py").
 
 Els fitxers d'entrada han de tenir les columnes:
-  'id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon', 'Timestamp'
+  'id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon'
 
-Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a toData_GPU_parallel.py
+Aquest fitxer cal executar-lo després de "prep_GPU_parallel.py" i abans de "toData_GPU_parallel.py".
+
+Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a "toData_GPU_parallel.py"
 per generar les columnes derivades: VentDir_sin, VentDir_cos, hora_sin, hora_cos, dia_sin, dia_cos, cos_sza, DewPoint i PotentialTemp.
 
-Els paràmetres dels Països Catalans es guardaran en un fitxer JSON (per exemple, PC_norm_params.json).
+Els paràmetres dels Països Catalans es guardaran en un fitxer JSON anomenat "PC_norm_params.json".
 """
 
 import os
@@ -20,6 +23,8 @@ import json
 import pandas as pd
 import numpy as np
 import calendar
+from datetime import datetime
+from tqdm import tqdm
 
 # Definició de FEATURE_COLUMNS que s'utilitzaran a toData_GPU_parallel.py
 FEATURE_COLUMNS = [
@@ -32,6 +37,19 @@ FEATURE_COLUMNS = [
 input_root = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
 # Ruta de sortida per als paràmetres dels Països Catalans
 output_norm_params = "PC_norm_params.json"
+
+# Suprimeix els warnings de divisió per zero
+np.seterr(divide='ignore')
+
+def extract_timestamp_from_filename(file_path: str) -> str:
+    """
+    Extreu el timestamp del nom del fitxer, que ha de tenir el format 'YYYYMMDDHHdadesPC_utc.csv'.
+    Retorna el timestamp en format 'YYYY-MM-DD HH:MM:SS'.
+    """
+    base = os.path.basename(file_path)
+    ts_str = base[:10]  # 'YYYYMMDDHH'
+    ts = datetime.strptime(ts_str, "%Y%m%d%H")
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 ##########################################
 # Funcions derivades per generar features #
@@ -146,14 +164,20 @@ all_files = glob.glob(os.path.join(input_root, "**", "*dadesPC_utc.csv"), recurs
 
 data_list = []
 
-for file in all_files:
+for file in tqdm(all_files, desc="Processant fitxers"):
     try:
         df = pd.read_csv(file)
-        # Comprova que el fitxer tingui les columnes originals
-        required_cols = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon', 'Timestamp']
+        # Comprova que el fitxer tingui les columnes originals (sense 'Timestamp')
+        required_cols = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon']
         if not set(required_cols).issubset(df.columns):
             print(f"El fitxer {file} no té totes les columnes requerides. S'omet.")
             continue
+        
+        # Si no hi ha la columna 'Timestamp', la afegeix extreient-la del nom del fitxer
+        if 'Timestamp' not in df.columns:
+            ts_str = extract_timestamp_from_filename(file)
+            df.insert(0, 'Timestamp', ts_str)
+        
         # Processar el DataFrame per obtenir les columnes derivades
         df = process_df_for_norm(df)
 
@@ -162,18 +186,23 @@ for file in all_files:
             alt_std = 175.61
             df['Alt_norm'] = (df['Alt'] - alt_mean) / alt_std
 
+        # Convertir la temperatura a Kelvin
         df['Temp'] = df['Temp'] + 273.15
 
-        # Activar o descativar la línia de sota en funció de si es vol fer o no a toData_GPU_parallel.py
+        # Aplicar transformació logarítmica a 'Pluja'
+        # Converteix la columna 'Pluja' a numèrica i substitueix qualsevol error o NaN per 0
+        df['Pluja'] = pd.to_numeric(df['Pluja'], errors='coerce').fillna(0)
+        # Assegura't que tots els valors siguin ≥ 0 (si algun és menor, el forcem a 0)
+        df['Pluja'] = np.maximum(df['Pluja'], 0)
+
         df['Pluja'] = np.log1p(df['Pluja'])
 
         pressure_ref = 1013.0
         df = add_dew_point(df)
         df = add_potential_temperature(df, pressure_ref)
-
         df['Patm'] = df['Patm'] - pressure_ref
 
-        # Seleccionar les columnes definit per FEATURE_COLUMNS
+        # Seleccionar les columnes definides per FEATURE_COLUMNS
         df = df[FEATURE_COLUMNS]
 
         data_list.append(df)
