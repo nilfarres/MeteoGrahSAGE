@@ -589,7 +589,7 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     full_edge_index = ensure_connectivity(full_edge_index, pos, k_neighbors)
     
     if add_multiscale:
-        ms_edge_index, ms_edge_attr = add_multiscale_edges(pos, x, multiscale_radius_quantile, edge_distance_scale)
+        ms_edge_index, ms_edge_attr = add_multiscale_edges(pos, x, multiscale_radius_quantile, edge_distance_scale, use_metric)
         full_edge_index = torch.cat([full_edge_index, ms_edge_index], dim=1)
         full_edge_attr = torch.cat([full_edge_attr, ms_edge_attr], dim=0)
     
