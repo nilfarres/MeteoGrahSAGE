@@ -25,6 +25,7 @@ import numpy as np
 import calendar
 from datetime import datetime
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 # Definició de FEATURE_COLUMNS que s'utilitzaran a toData_GPU_parallel.py
 FEATURE_COLUMNS = [
@@ -228,3 +229,24 @@ with open(output_norm_params, "w") as f:
     json.dump(PC_norm_params, f, indent=4)
 
 print(f"Paràmetres dels Països Catalans calculats i guardats a {output_norm_params}")
+
+# Defineix la carpeta on es desaran els histogrames
+output_folder = "histogrames"
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
+
+print("Generant i desant histogrammes per a cada feature:")
+
+for col in FEATURE_COLUMNS:
+    plt.figure(figsize=(8, 4))
+    plt.hist(data_all[col].dropna(), bins=50, color='blue', alpha=0.7)
+    plt.title(f"Distribució de {col}")
+    plt.xlabel(col)
+    plt.ylabel("Freqüència")
+    plt.grid(True)
+    
+    # Desa l'imatge amb el nom de la feature
+    save_path = os.path.join(output_folder, f"{col}.png")
+    plt.savefig(save_path)
+    plt.close()
+    print(f"Histograma de {col} desat a {save_path}")
