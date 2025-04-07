@@ -65,7 +65,12 @@ PROCESSED_YEARS = [year for year in YEARS_FOR_INTERPOLATION if year >= 2016]
 GROUP_BY_PERIOD_CHOICES = ["none", "day", "month"]
 
 os.makedirs("logs", exist_ok=True)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+log_filename = os.path.join("logs", f"toData_GPU_parallel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler(log_filename)]
+)
 
 # Suprimeix els warnings de divisió per zero
 np.seterr(divide='ignore')
@@ -155,6 +160,7 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
     Si VentFor és 0, s'estableixen VentDir_sin i VentDir_cos a 0 per indicar direcció indefinida.
     Opcionalment, afegeix components zonal/meridional.
     """
+
     if df['VentDir'].dtype == object:
         mapping = {
             'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
@@ -163,7 +169,7 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
             'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5,
             'Calma': 0
         }
-        df['VentDir'] = df['VentDir'].map(mapping)
+        df['VentDir'] = df['VentDir'].map(mapping)        
     df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
     df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
     
@@ -172,10 +178,12 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
     df.loc[df['VentFor'] == 0, 'VentDir_cos'] = 0.0
     
     if add_components:
-        df['Vent_u'] = df['VentFor'] * df['VentDir_cos']
-        df['Vent_v'] = df['VentFor'] * df['VentDir_sin']
+        df['Vent_u'] = (df['VentFor'] * df['VentDir_cos'])
+        df['Vent_v'] = (df['VentFor'] * df['VentDir_sin'])
+
     # Eliminar la columna original
     df.drop(columns=['VentDir'], inplace=True)
+
     return df
 
 
@@ -236,6 +244,13 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
 
     df = encode_wind_direction(df, add_wind_components)
 
+    logging.debug(f"Després d'encode_wind_direction — columnes del df: {df.columns.tolist()}")
+
+    if add_wind_components:
+        if 'Vent_u' not in df.columns or 'Vent_v' not in df.columns:
+            logging.error(f"Després d'encode_wind_direction, falta 'Vent_u' o 'Vent_v'. Columnes disponibles: {df.columns.tolist()}")
+            raise ValueError("Falten 'Vent_u' i/o 'Vent_v' després de encode_wind_direction.")
+
     # Converteix la temperatura de ºC a Kelvin
     df['Temp'] = df['Temp'] + 273.15
 
@@ -261,17 +276,14 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
 
     # Si s'ha activat add_wind_components, afegim Vent_u i Vent_v a FEATURE_COLUMNS
     if add_wind_components:
-        if 'Vent_u' not in df.columns:
-            # En principi, ja s'hauria calculat dins de encode_wind_direction,
-            # però en cas contrari, es pot calcular així:
-            df['Vent_u'] = df['VentFor'] * df['VentDir_cos']
-        if 'Vent_v' not in df.columns:
-            df['Vent_v'] = df['VentFor'] * df['VentDir_sin']
-        # Assegurar-se que FEATURE_COLUMNS inclou aquestes noves columnes
-        if 'Vent_u' not in FEATURE_COLUMNS:
-            FEATURE_COLUMNS.append('Vent_u')
-        if 'Vent_v' not in FEATURE_COLUMNS:
-            FEATURE_COLUMNS.append('Vent_v')
+        if 'Vent_u' in df.columns and 'Vent_v' in df.columns:
+            if 'Vent_u' not in FEATURE_COLUMNS:
+                FEATURE_COLUMNS.append('Vent_u')
+            if 'Vent_v' not in FEATURE_COLUMNS:
+                FEATURE_COLUMNS.append('Vent_v')
+        else:
+            logging.error("Les columnes 'Vent_u' i 'Vent_v' no existeixen després de encode_wind_direction.")
+            raise ValueError("Falten les columnes 'Vent_u' i/o 'Vent_v'. Revisa encode_wind_direction.")
 
     # Assegurem que FEATURE_COLUMNS inclou les noves variables derivades
     if 'DewPoint' not in FEATURE_COLUMNS:
