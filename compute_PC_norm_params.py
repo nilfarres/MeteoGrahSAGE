@@ -27,6 +27,8 @@ from datetime import datetime
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+ADD_WIND_COMPONENTS = True
+
 # Definició de FEATURE_COLUMNS que s'utilitzaran a toData_GPU_parallel.py
 FEATURE_COLUMNS = [
     'Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
@@ -123,6 +125,9 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
     """
     Converteix 'VentDir' a 'VentDir_sin' i 'VentDir_cos'.
     """
+    # Convertir la columna 'VentDir' a float (per tractar correctament tant strings com numbers)
+    df['VentDir'] = df['VentDir'].astype(float)
+
     if df['VentDir'].dtype == object:
         mapping = {
             'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5,
@@ -134,10 +139,15 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
         df['VentDir'] = df['VentDir'].map(mapping)
     df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
     df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
+    
     # Si es volen afegir components addicionals (no necessari per aquest càlcul)
     if add_components:
-        df['Vent_u'] = df['VentFor'] * df['VentDir_cos']
-        df['Vent_v'] = df['VentFor'] * df['VentDir_sin']
+        # Convertir la direcció del vent en components meteorològics:
+        # u (zonal, positiu cap a l'est) = -VentFor * sin(θ)
+        # v (meridional, positiu cap al nord) = -VentFor * cos(θ)
+        df['Vent_u'] = - df['VentFor'] * np.sin(np.deg2rad(df['VentDir']))
+        df['Vent_v'] = - df['VentFor'] * np.cos(np.deg2rad(df['VentDir']))
+
     # Eliminar la columna original
     df.drop(columns=['VentDir'], inplace=True)
     return df
@@ -153,7 +163,7 @@ def process_df_for_norm(df: pd.DataFrame) -> pd.DataFrame:
     
     df = add_cyclical_time_features(df)
     df = add_solar_features(df)
-    df = encode_wind_direction(df, add_components=True)
+    df = encode_wind_direction(df, add_components=ADD_WIND_COMPONENTS)
     return df
 
 ##########################################
