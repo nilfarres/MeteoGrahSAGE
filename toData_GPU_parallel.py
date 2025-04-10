@@ -160,6 +160,8 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
     Si VentFor és 0, s'estableixen VentDir_sin i VentDir_cos a 0 per indicar direcció indefinida.
     Opcionalment, afegeix components zonal/meridional.
     """
+    # Convertir la columna 'VentDir' a float (per tractar correctament tant strings com numbers)
+    df['VentDir'] = df['VentDir'].astype(float)
 
     if df['VentDir'].dtype == object:
         mapping = {
@@ -178,8 +180,12 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
     df.loc[df['VentFor'] == 0, 'VentDir_cos'] = 0.0
     
     if add_components:
-        df['Vent_u'] = (df['VentFor'] * df['VentDir_cos'])
-        df['Vent_v'] = (df['VentFor'] * df['VentDir_sin'])
+        # Convertir la direcció del vent en components meteorològics:
+        # u (zonal, positiu cap a l'est) = -VentFor * sin(θ)
+        # v (meridional, positiu cap al nord) = -VentFor * cos(θ)
+        df['Vent_u'] = - df['VentFor'] * np.sin(np.deg2rad(df['VentDir']))
+        df['Vent_v'] = - df['VentFor'] * np.cos(np.deg2rad(df['VentDir']))
+
 
     # Eliminar la columna original
     df.drop(columns=['VentDir'], inplace=True)
@@ -237,6 +243,8 @@ def create_node_features(df: pd.DataFrame, exclude_temporal_norm: bool, add_wind
     
     Retorna el tensor de features i els paràmetres de normalització.
     """
+    # Assegurar-nos que els noms de columnes no contenen espais extres
+    df.columns = df.columns.str.strip()
 
     if 'Timestamp' in df.columns:
         df = add_cyclical_time_features(df)
@@ -550,7 +558,7 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
     diff_pluja = (x[src, 2] - x[dst, 2]).unsqueeze(1)
     diff_ventFor = (x[src, 3] - x[dst, 3]).unsqueeze(1)
     diff_patm = (x[src, 4] - x[dst, 4]).unsqueeze(1)
-    abs_diff_alt = torch.abs(x[src, 5] - x[dst, 5]).unsqueeze(1) # Diferència absoluta d’altitud
+    abs_diff_alt = torch.abs(x[src, 5] - x[dst, 5]).unsqueeze(1)  # Diferència absoluta d’altitud
     diff_ventDir_sin = (x[src, 6] - x[dst, 6]).unsqueeze(1)
     diff_ventDir_cos = (x[src, 7] - x[dst, 7]).unsqueeze(1)
     diff_dewpoint = (x[src, 13] - x[dst, 13]).unsqueeze(1)
@@ -558,38 +566,83 @@ def create_edge_index_and_attr(pos: torch.Tensor, x: torch.Tensor, k_neighbors: 
 
     # Afegim el càlcul de l'azimut (bearing) entre nodes
     if not use_metric:
-        # Extreure latitud i longitud (en graus) dels nodes origen i destí
         lat_src = pos[src, 0]
         lon_src = pos[src, 1]
         lat_dst = pos[dst, 0]
         lon_dst = pos[dst, 1]
-        # Calcular l'azimut amb una funció definida (assumim que està definida: compute_bearing_torch)
-        bearing = compute_bearing_torch(lat_src, lon_src, lat_dst, lon_dst)  # resultat en graus [0, 360)
-        # Convertir a radians i obtenir sin i cos
+        bearing = compute_bearing_torch(lat_src, lon_src, lat_dst, lon_dst)  # Resultat en graus [0, 360)
         bearing_rad = torch.deg2rad(bearing)
         bearing_sin = torch.sin(bearing_rad).unsqueeze(1)
         bearing_cos = torch.cos(bearing_rad).unsqueeze(1)
     else:
-        # Si use_metric és True, podem assignar zeros o decidir no afegir aquesta característica
         bearing_sin = torch.zeros_like(diff_temp)
         bearing_cos = torch.zeros_like(diff_temp)
 
-    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja, diff_ventFor, diff_patm, 
-                           abs_diff_alt, diff_ventDir_sin, diff_ventDir_cos, diff_dewpoint, diff_potentialTemp,
+    edge_attr = torch.cat([edge_attr_dist, diff_temp, diff_humitat, diff_pluja,
+                           diff_ventFor, diff_patm, abs_diff_alt, diff_ventDir_sin,
+                           diff_ventDir_cos, diff_dewpoint, diff_potentialTemp,
                            bearing_sin, bearing_cos], dim=1)
     
     rev_edge_index = directed_edge_index[[1, 0]]
-
-    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja, -diff_ventFor, -diff_patm, 
-                               abs_diff_alt, -diff_ventDir_sin, -diff_ventDir_cos, -diff_dewpoint, -diff_potentialTemp,
+    rev_edge_attr = torch.cat([edge_attr_dist, -diff_temp, -diff_humitat, -diff_pluja,
+                               -diff_ventFor, -diff_patm, abs_diff_alt, -diff_ventDir_sin,
+                               -diff_ventDir_cos, -diff_dewpoint, -diff_potentialTemp,
                                -bearing_sin, -bearing_cos], dim=1)
+    
     full_edge_index = torch.cat([directed_edge_index, rev_edge_index], dim=1)
     full_edge_attr = torch.cat([edge_attr, rev_edge_attr], dim=0)
     
-    full_edge_index = ensure_connectivity(full_edge_index, pos, k_neighbors)
+    # Emmagatzemem el nombre original d’arestes abans d’assegurar la connectivitat
+    original_num_edges = full_edge_index.size(1)
+    updated_edge_index = ensure_connectivity(full_edge_index, pos, k_neighbors)
+    updated_num_edges = updated_edge_index.size(1)
+    
+    # Si s'han afegit arestes noves, calculem els seus atributs
+    if updated_num_edges > original_num_edges:
+        num_extra = updated_num_edges - original_num_edges
+        new_edges = updated_edge_index[:, original_num_edges:]  # les noves arestes afegides al final
+        src_new = new_edges[0]
+        dst_new = new_edges[1]
+        
+        if use_metric:
+            edge_attr_dist_new = compute_euclidean_distance(pos[src_new], pos[dst_new]) / edge_distance_scale
+        else:
+            edge_attr_dist_new = compute_geodesic_distance(pos[src_new], pos[dst_new]) / edge_distance_scale
+        
+        diff_temp_new = (x[src_new, 0] - x[dst_new, 0]).unsqueeze(1)
+        diff_humitat_new = (x[src_new, 1] - x[dst_new, 1]).unsqueeze(1)
+        diff_pluja_new = (x[src_new, 2] - x[dst_new, 2]).unsqueeze(1)
+        diff_ventFor_new = (x[src_new, 3] - x[dst_new, 3]).unsqueeze(1)
+        diff_patm_new = (x[src_new, 4] - x[dst_new, 4]).unsqueeze(1)
+        abs_diff_alt_new = torch.abs(x[src_new, 5] - x[dst_new, 5]).unsqueeze(1)
+        diff_ventDir_sin_new = (x[src_new, 6] - x[dst_new, 6]).unsqueeze(1)
+        diff_ventDir_cos_new = (x[src_new, 7] - x[dst_new, 7]).unsqueeze(1)
+        diff_dewpoint_new = (x[src_new, 13] - x[dst_new, 13]).unsqueeze(1)
+        diff_potentialTemp_new = (x[src_new, 14] - x[dst_new, 14]).unsqueeze(1)
+        
+        if not use_metric:
+            lat_src_new = pos[src_new, 0]
+            lon_src_new = pos[src_new, 1]
+            lat_dst_new = pos[dst_new, 0]
+            lon_dst_new = pos[dst_new, 1]
+            bearing_new = compute_bearing_torch(lat_src_new, lon_src_new, lat_dst_new, lon_dst_new)
+            bearing_rad_new = torch.deg2rad(bearing_new)
+            bearing_sin_new = torch.sin(bearing_rad_new).unsqueeze(1)
+            bearing_cos_new = torch.cos(bearing_rad_new).unsqueeze(1)
+        else:
+            bearing_sin_new = torch.zeros_like(diff_temp_new)
+            bearing_cos_new = torch.zeros_like(diff_temp_new)
+        
+        new_edge_attr = torch.cat([edge_attr_dist_new, diff_temp_new, diff_humitat_new, diff_pluja_new,
+                                   diff_ventFor_new, diff_patm_new, abs_diff_alt_new,
+                                   diff_ventDir_sin_new, diff_ventDir_cos_new, diff_dewpoint_new,
+                                   diff_potentialTemp_new, bearing_sin_new, bearing_cos_new], dim=1)
+        full_edge_attr = torch.cat([full_edge_attr, new_edge_attr], dim=0)
+        full_edge_index = updated_edge_index
     
     if add_multiscale:
-        ms_edge_index, ms_edge_attr = add_multiscale_edges(pos, x, multiscale_radius_quantile, edge_distance_scale, use_metric)
+        ms_edge_index, ms_edge_attr = add_multiscale_edges(pos, x, multiscale_radius_quantile,
+                                                           edge_distance_scale, use_metric)
         full_edge_index = torch.cat([full_edge_index, ms_edge_index], dim=1)
         full_edge_attr = torch.cat([full_edge_attr, ms_edge_attr], dim=0)
     
@@ -631,17 +684,18 @@ def sanity_check_node(data, node_index, num_neighbors=5):
     
     # Si no té veïns, notifica-ho
     if neighbors.numel() == 0:
-        print(f"El node {node_index} no té veïns.")
+        logging.warning(f"El node {node_index} no té veïns.")
         return
     
-    print(f"Node {node_index} té {neighbors.numel()} veïns. Mostrant els primers {num_neighbors}:")
+    logging.info(f"Node {node_index} té {neighbors.numel()} veïns. Mostrant els primers {num_neighbors}:")
     for i, neighbor in enumerate(neighbors[:num_neighbors]):
         # Mostrar informació bàsica: id del node veí i la distància de l'aresta
         edge_mask = (data.edge_index[0] == node_index) & (data.edge_index[1] == neighbor)
         edge_attr = data.edge_attr[edge_mask]
         # Suposant que la primera columna d'edge_attr és la distància geodèsica escalada
         distance = edge_attr[0, 0].item() if edge_attr.size(0) > 0 else None
-        print(f"  Veí {i+1}: Node {neighbor.item()} amb distància: {distance:.2f}")
+        logging.info(f"  Veí {i+1}: Node {neighbor.item()} amb distància: {distance:.2f}" if distance is not None else
+                     f"  Veí {i+1}: Node {neighbor.item()} sense distància disponible")
 
 
 def assign_gpu_device(file_idx: int, gpu_devices: list) -> str:
@@ -711,14 +765,19 @@ def process_file(file_path: str, input_root: str, output_root: str, k_neighbors:
         # Opcional: Realitzar una validació de sanity check per a un node específic (exemple: primer node)
         sanity_check_node(data, node_index=0, num_neighbors=5)
         
-        # Afegir, opcionalment, l'índex de node (per futurs embeddings)
-        rel_path = os.path.relpath(file_path, input_root)
+        # Normalitzar els camins i obtenir el camí relatiu
+        file_path_norm = os.path.normpath(file_path)
+        input_root_norm = os.path.normpath(input_root)
+        rel_path = os.path.relpath(file_path_norm, input_root_norm)
         rel_path_pt = rel_path.replace("dadesPC_utc.csv", "pt")
-        output_file = os.path.join(output_root, rel_path_pt)
+        output_file = os.path.join(os.path.normpath(output_root), rel_path_pt)
+
+
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         torch.save(data, output_file)
         logging.info(f"Conversió correcta: {file_path} -> {output_file}")
         return {"status": "success", "file": file_path}
+    
     except Exception as e:
         logging.error(f"Error en processar {file_path}: {e}")
         return {"status": "fail", "file": file_path, "error": str(e)}
@@ -740,7 +799,7 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
     """
     files_to_process = []
     for root_dir, dirs, files in os.walk(input_root):
-        print("Processant directori:", root_dir)
+        logging.info(f"Processant directori: {root_dir}")
         dirs[:] = [d for d in dirs if not any(sub.lower() in d.lower() for sub in [
             "tauladades", "vextrems", "admin_estacions", "clima", "clima meteo",
             "error_var", "html", "png", "var_vextrems"]) and not re.search(r'\d+_old', d)]
@@ -753,9 +812,9 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
                         continue
                     file_path = os.path.join(root_dir, file)
                     files_to_process.append(file_path)
-    print(f"Total fitxers a processar: {len(files_to_process)}")
+    logging.info(f"Total fitxers a processar: {len(files_to_process)}")
     if not files_to_process:
-        print("No s'ha trobat cap fitxer que compleixi els criteris.")
+        logging.warning("No s'ha trobat cap fitxer que compleixi els criteris.")
         return
     
     results = []
@@ -776,7 +835,6 @@ def process_all_files(input_root: str, output_root: str, max_workers: int, k_nei
     success = [r for r in results if r and r.get("status") == "success"]
     failed = [r for r in results if r and r.get("status") == "fail"]
     logging.info(f"Processament finalitzat: {len(success)} èxit, {len(failed)} fallits.")
-    print(f"Processament finalitzat: {len(success)} èxit, {len(failed)} fallits.")
     
     # Opcional: Agrupar resultats per període
     if group_by_period in ["day", "month"]:
