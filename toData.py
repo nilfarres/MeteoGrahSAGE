@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-toData_GPU_parallel.py ― v2 (abril 2025)
+toData.py ― v2 (abril 2025)
 
 Converteix els CSV preprocessats (prep_GPU_parallel.py) a Data objects
 de torch_geometric amb:
