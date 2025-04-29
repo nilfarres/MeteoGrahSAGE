@@ -1,692 +1,1011 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-MeteoGraphSAGE.py
-
-Model de predicció meteorològica basat en GraphSAGE amb components seqüencials i atenció temporal.
-Autor: Nil Farrés Soler (Treball Final de Grau)
-
-Aquest codi assumeix que prèviament s'han executat:
- - prep_GPU_parallel.py (preprocessat de dades crues a CSV filtrats)
- - toData_GPU_parallel.py (conversió de CSV preprocessats a objectes Data de PyTorch Geometric)
- - compute_PC_norm_params.py (càlcul de paràmetres de normalització globals, si escau)
-
-El model MeteoGraphSAGE definit aquí utilitza els objectes Data generats (grafs horaris d'estacions meteorològiques)
-per entrenar un sistema de predicció temporal de variables meteorològiques. Incorpora:
- - Capa(s) GraphSAGE per a agregació espacial de veïns en el graf.
- - Capa seqüencial (LSTM o GRU) per a modelar la dinàmica temporal de cada node (estació) al llarg del temps.
- - Mecanisme d'atenció temporal multi-cap (opcional) per enfocar-se en determinats instants passats rellevants.
- - Possibilitat de predir una variable objectiu o múltiples variables.
- - Funcions de predicció per estació i per a tota la regió (amb interpolació a una graella i exportació a NetCDF).
-
-Es considera l'altitud i altres variables derivades físiques en les entrades per millorar la capacitat predictiva en terreny complex.
-El codi inclou una secció main per entrenar el model, avaluar-lo i produir sortides de predicció i gràfiques.
-"""
 import os
 import math
-import json
 import argparse
 import logging
+import warnings
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+import torch_geometric
 from torch_geometric.data import Data
+from torch_geometric.nn import SAGEConv, GATConv, GINConv
 from torch_geometric.utils import subgraph
+from typing import List, Iterator, Optional, Tuple
+from copy import deepcopy
 # Opcional: matplotlib per a gràfiques (es pot instal·lar al cluster si cal)
 import matplotlib.pyplot as plt
 # Opcional: per exportar a NetCDF
 from netCDF4 import Dataset
+import random
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from tqdm import tqdm
+from collections import deque
+import sys
 
-# Configurem el logger per mostrar informació durant l'entrenament i predicció
+
+# Configuració del logger per mostrar informació durant l'entrenament i predicció
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Definim els noms de features (columnes) tal com es van utilitzar en el preprocessament
+# Silenciar només el FutureWarning de torch.load(weights_only)
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=".*torch\\.load.*weights_only.*"
+)
+
+# Sempre escriure la barra encara que no sigui TTY
+tqdm_kwargs = dict(file=sys.stderr)
+
+# Noms de característiques (features) tal com es van utilitzar en el preprocessament
 FEATURE_NAMES = ['Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
                  'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos',
                  'dia_sin', 'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp']
 
-def create_sequences(data_dir: str, period: str = "day", window_size: int = None):
-    """
-    Crea o carrega seqüències temporals de grafs (objectes Data) a partir dels fitxers .pt generats.
-    - Si hi ha fitxers 'sequence_*.pt' al directori, es carreguen com a seqüències (ja ordenades per temps).
-    - Si no, agrupa fitxers individuals segons 'period' (day, month) o per finestra mòbil de longitud window_size.
-    
-    Retorna una llista de seqüències, on cada seqüència és una llista d'objectes Data ordenats cronològicament.
-    """
-    sequences = []
-    sequence_files = [f for f in os.listdir(data_dir) if f.startswith("sequence_") and f.endswith(".pt")]
-    if sequence_files:
-        # Carreguem seqüències preparades
-        for fname in sorted(sequence_files):
-            fpath = os.path.join(data_dir, fname)
-            try:
-                seq = torch.load(fpath)
-                if seq:  # seqüència no buida
-                    sequences.append(seq)
-            except Exception as e:
-                logging.error(f"No s'ha pogut carregar {fname}: {e}")
-    else:
-        # No hi ha seqüències predefinides, generem-les manualment
-        # Llegeix tots els fitxers .pt individuals i ordena per timestamp
-        data_files = []
-        for root, dirs, files in os.walk(data_dir):
-            for file in files:
-                if file.endswith(".pt") and not file.startswith("sequence_") and not file.startswith("group_"):
-                    data_files.append(os.path.join(root, file))
-        # Sort by timestamp if possible
-        data_list = []
-        for fpath in sorted(data_files):
-            try:
-                data = torch.load(fpath)
-                data_list.append(data)
-            except Exception as e:
-                logging.error(f"Error carregant {fpath}: {e}")
-        # Ara agrupem segons period o window_size
-        if window_size:
-            # Finestra mòbil: creem seqüències de longitud window_size
-            for i in range(0, len(data_list) - window_size + 1):
-                seq = data_list[i:i+window_size]
-                sequences.append(seq)
-        elif period in ["day", "month"]:
-            # Agrupem per dia o mes basant-nos en l'atribut timestamp de Data (hauria d'existir)
-            grouped = {}
-            for data in data_list:
-                if hasattr(data, "timestamp"):
-                    # timestamp és string "YYYY-MM-DD HH:MM:SS"
-                    ts = data.timestamp if isinstance(data.timestamp, str) else str(data.timestamp)
-                    try:
-                        date = ts.split(" ")[0]  # "YYYY-MM-DD"
-                    except:
-                        date = ts
-                    if period == "day":
-                        key = date  # ja és YYYY-MM-DD
-                    elif period == "month":
-                        key = date[:7]  # YYYY-MM
-                    grouped.setdefault(key, []).append(data)
-            for key, seq in grouped.items():
-                # Ordenem la seqüència per hora
-                seq.sort(key=lambda d: d.timestamp if hasattr(d, "timestamp") else 0)
-                sequences.append(seq)
-            sequences.sort(key=lambda seq: seq[0].timestamp if hasattr(seq[0], "timestamp") else "")
-        else:
-            # Cap agrupació: cada Data per separat com a seqüència de longitud 1
-            for data in data_list:
-                sequences.append([data])
-    logging.info(f"S'han preparat {len(sequences)} seqüències de període '{period}'")
-    return sequences
+logger = logging.getLogger(__name__)
 
-class MeteoGraphSAGE(nn.Module):
+# —— Reproducibilitat ——————————————————————————————————————————————————————
+SEED = 42
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+random.seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+# Opcional: fer CuDNN determinista (pot alentir lleugerament)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+def create_sequences(
+    data_dir: str,
+    period: str = "day",
+    window_size: Optional[int] = None,
+    stride: int = 1,
+    min_seq_len: int = 2,
+    lazy: bool = False
+) -> Iterator[dict]:
     """
-    Model neuronal combinant GraphSAGE per a agregació espacial i LSTM/GRU per a modelat temporal.
-    Opcionalment, incorpora atenció temporal multi-cap sobre les seqüències.
+    Genera seqüències temporals normalitzades de Data objects, totes amb el mateix 
+    ordre i nombre de nodes. Cada seqüència és un dict amb:
+      - 'data': List[Data]  … grafs remapejats i padded
+      - 'mask': Tensor       … [seq_len, N] on N = num_total_nodes (1=presència,0=pad)
+      - 'ids': List[id]      … llista d'ids canònics de longitud N
+    Paràmetres:
+      data_dir: Directori amb fitxers pt i/o amb agrupacions 'sequence_*pt'.
+      period: "day"|"month" (només si window_size és None).
+      window_size: longitud fixa de finestra (si None, agrupa per period).
+      stride: salt entre finestra i finestra.
+      min_seq_len: seqüències amb menys passos es descarten.
+      lazy: si True, retorna un generator que carrega els pt quan cal.
     """
-    def __init__(self, in_features: int, hidden_dim: int, out_features: int,
-                 num_layers: int = 2, use_lstm: bool = True, use_gru: bool = False,
-                 use_transformer: bool = False, use_attention: bool = False,
-                 num_attention_heads: int = 4, dropout: float = 0.2):
-        super(MeteoGraphSAGE, self).__init__()
+    # 1) Llista tots els fitxers pt
+    seq_files = sorted(f for f in os.listdir(data_dir) if f.startswith("sequence_") and f.endswith("pt"))
+    if seq_files:
+        file_paths = [os.path.join(data_dir, f) for f in seq_files]
+    else:
+        all_files = []
+        for root, _, files in os.walk(data_dir):
+            for fn in files:
+                if fn.endswith("pt") and not fn.startswith(("sequence_","group_")):
+                    all_files.append(os.path.join(root, fn))
+        file_paths = sorted(all_files)
+
+    # 2) Scan ids
+    def scan_ids(fp_list):
+        ids_map, times = [], []
+        for fp in tqdm(fp_list, desc="[scan_ids] fitxers", unit="fitxer"):
+            d = torch.load(fp) if not lazy else torch.load(fp, map_location="cpu")
+            ids_map.append(list(d.ids))
+            times.append(getattr(d, "timestamp", None))
+        return ids_map, times
+
+    ids_list, timestamps = scan_ids(file_paths)
+
+    # 3) Canonicalitzar ids
+    all_ids = sorted({i for ids in ids_list for i in ids})
+    id2idx = {i: k for k, i in enumerate(all_ids)}
+    N = len(all_ids)
+
+    # 4) Funció remap_and_pad
+    def remap_and_pad(data: Data) -> Data:
+        feat_dim = data.x.size(1)
+        x = torch.zeros((N, feat_dim), dtype=data.x.dtype)
+        mask = torch.zeros(N, dtype=torch.bool)
+        old_ids = list(data.ids)
+        for old_idx, node_id in enumerate(old_ids):
+            new_idx = id2idx[node_id]
+            x[new_idx] = data.x[old_idx]
+            mask[new_idx] = True
+        # Remap pos
+        pos = None
+        if hasattr(data, 'pos'):
+            pos_dim = data.pos.size(1)
+            pos = torch.zeros((N, pos_dim), dtype=data.pos.dtype)
+            for old_idx, node_id in enumerate(old_ids):
+                pos[id2idx[node_id]] = data.pos[old_idx]
+        # Remap edges
+        remapped_edges, remapped_attrs = [], []
+        has_attr = hasattr(data, 'edge_attr') and data.edge_attr is not None
+        for ei, (u, v) in enumerate(data.edge_index.t().tolist()):
+            ui, vi = id2idx[old_ids[u]], id2idx[old_ids[v]]
+            remapped_edges.append([ui, vi])
+            if has_attr:
+                remapped_attrs.append(data.edge_attr[ei])
+        edge_index = torch.tensor(remapped_edges, dtype=torch.long).t().contiguous()
+        edge_attr = torch.stack(remapped_attrs) if has_attr else None
+        new_data = Data(x=x, edge_index=edge_index)
+        new_data.mask = mask
+        new_data.ids = all_ids
+        if pos is not None: new_data.pos = pos
+        if edge_attr is not None: new_data.edge_attr = edge_attr
+        return new_data
+
+    L = len(file_paths)
+
+    # 5) Sliding window o grup per period
+    if window_size:
+        step = stride if stride and stride > 0 else window_size
+        buf = deque()
+        # Pre-carrega
+        for fp in tqdm(file_paths[:window_size], desc="[create_sequences] preload", unit="fitxer", disable=(rank!=0), **tqdm_kwargs):
+            d = torch.load(fp, map_location='cpu') if lazy else torch.load(fp)
+            buf.append(remap_and_pad(d))
+        if len(buf) == window_size:
+            yield {"data": list(buf), "ids": all_ids, "mask": torch.stack([d.mask for d in buf], dim=0)}
+        # Finestra mòbil
+        for idx in tqdm(range(window_size, L, step), desc="[create_sequences] seqüències", unit="pas", disable=(rank!=0), **tqdm_kwargs):
+            for _ in range(min(step, len(buf))): buf.popleft()
+            for fp in file_paths[idx: min(idx+step, L)]:
+                d = torch.load(fp, map_location='cpu') if lazy else torch.load(fp)
+                buf.append(remap_and_pad(d))
+            if len(buf) == window_size:
+                yield {"data": list(buf), "ids": all_ids, "mask": torch.stack([d.mask for d in buf], dim=0)}
+    else:
+        # Agrupació dia/mes
+        from collections import defaultdict
+        grp = defaultdict(list)
+        for i, ts in enumerate(timestamps):
+            key = ts.split()[0] if ts is not None and period == 'day' else ts[:7] if ts is not None else i
+            grp[key].append(i)
+        indices = []
+        for seq in grp.values():
+            if len(seq) >= min_seq_len:
+                for start in range(0, len(seq) - min_seq_len + 1, stride):
+                    indices.append(seq[start:start + min_seq_len])
+        for idxs in tqdm(indices, desc="[create_sequences] seqüències", unit="seqüència", disable=(rank!=0), **tqdm_kwargs):
+            seq_data = []
+            for i in idxs:
+                fp = file_paths[i]
+                d = torch.load(fp) if not lazy else torch.load(fp, map_location='cpu')
+                seq_data.append(remap_and_pad(d))
+            yield {"data": seq_data, "ids": all_ids, "mask": torch.stack([d.mask for d in seq_data], dim=0)}
+
+
+class MeteoGraphSAGEEnhanced(nn.Module):
+    """
+    Model de predicció meteorològica amb millores espacials i temporals.
+    - Agregació espacial configurable: GraphSAGE, GAT o GIN.
+    - Arquitectura temporal flexible: estàtica, RNN (LSTM/GRU) o EvolveGCN (capes GNN dinàmiques).
+    - Embeddings d'estació dinàmics o basats en ID.
+    """
+    def __init__(self, in_features, hidden_dim, out_features, 
+                 aggregator: str = 'gat',       # Tipus d'agregador: 'sage', 'gat' o 'gin'
+                 temporal_model: str = 'EvolveGCN',  # 'none', 'LSTM', 'GRU', 'EvolveGCN', 'Transformer'
+                 num_layers: int = 2, num_heads: int = 4, dropout: float = 0.2,
+                 station_embedding_dim: int = 0, num_stations: int = None):
+        super().__init__()
         # Guardem paràmetres
-        self.in_features = in_features
         self.hidden_dim = hidden_dim
         self.out_features = out_features
+        self.aggregator = aggregator.lower()
+        self.temporal_model = temporal_model.lower()
         self.num_layers = num_layers
-        self.use_lstm = use_lstm
-        self.use_gru = use_gru
-        self.use_transformer = use_transformer
-        self.use_attention = use_attention
-        # Capa d'entrada i capes GraphSAGE
-        # Primera capa: de in_features a hidden_dim
-        self.conv_layers = nn.ModuleList()
-        self.conv_layers.append(nn.Linear(in_features, hidden_dim))
-        # Usem Linear per fer la transformació inicial, després SAGEConv per la propagació (PyG requereix objecte Data, que tindrem al forward)
-        # NOTA: Podríem fer servir torch_geometric.nn.SAGEConv directament; però per simplicitat apliquem un linear + agregació manual amb mitjana.
-        # (Implementar SAGEConv manualment ens dona control per afegir residuals i norm.)
-        # Capa de GraphSAGE: definim pesos per combinar node central i agregat de veïns
-        self.W_self = nn.ModuleList()  # pes per la part pròpia
-        self.W_nei = nn.ModuleList()   # pes per la part veïns
-        for i in range(num_layers):
-            # Cada capa tindrà dimensió hidden_dim -> hidden_dim
-            self.W_self.append(nn.Linear(hidden_dim, hidden_dim))
-            self.W_nei.append(nn.Linear(hidden_dim, hidden_dim))
-        # Normalització i activació
-        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(hidden_dim) for _ in range(num_layers)])
+        self.num_heads = num_heads if self.aggregator == 'gat' else 1  # caps d'atenció (només GAT)
+        
+        # Embedding d'estació (opcional, per capturar microclima local de cada estació)
+        if station_embedding_dim > 0 and num_stations is not None:
+            self.station_embedding = nn.Embedding(num_stations, station_embedding_dim)
+        else:
+            self.station_embedding = None
+        
+        # Calcul de la dimensió d'entrada de la primera capa (afegint embedding estació si escau)
+        input_dim = in_features + (station_embedding_dim if self.station_embedding is not None else 0)
+        # Projecció inicial a hidden_dim
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        
+        # Definició de les capes de convolució de graf segons l'agregador seleccionat
+        self.convs = nn.ModuleList()
+        self.batch_norms = nn.ModuleList()
+        if self.aggregator == 'sage':
+            # GraphSAGE amb agregació de mitjana (baseline)
+            for _ in range(num_layers):
+                self.convs.append(SAGEConv(hidden_dim, hidden_dim, aggr='mean'))
+                self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
+        elif self.aggregator == 'gat':
+            # Graph Attention Network: usem concat=False per mantenir dimensió hidden_dim
+            for _ in range(num_layers):
+                self.convs.append(GATConv(hidden_dim, hidden_dim, heads=num_heads, concat=False, dropout=0.1))
+                self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
+        elif self.aggregator == 'gin':
+            # Graph Isomorphism Network: definim una MLP simple per a l'agregació
+            for _ in range(num_layers):
+                mlp = nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim, hidden_dim)
+                )
+                # train_eps=True permet a GIN aprendre un pes residual epsilon
+                conv = GINConv(nn=mlp, train_eps=True)
+                self.convs.append(conv)
+                self.batch_norms.append(nn.BatchNorm1d(hidden_dim))
+        else:
+            raise ValueError(f"Aggregador desconegut: {aggregator}. Triar entre 'sage', 'gat', 'gin'.")
+        
         self.activation = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        # Mòdul seqüencial (LSTM o GRU) per a la part temporal
-        if use_lstm or use_gru:
-            rnn_input_dim = hidden_dim
+        
+        # Mòdul temporal: RNN (LSTM/GRU) o Transformer o EvolveGCN
+        self.rnn = None
+        self.transformer_encoder = None
+        self.evolve_gcns = None
+        if self.temporal_model in ['lstm', 'gru']:
             rnn_hidden_dim = hidden_dim
-            if use_lstm:
-                self.rnn = nn.LSTM(rnn_input_dim, rnn_hidden_dim, batch_first=False)
-            elif use_gru:
-                self.rnn = nn.GRU(rnn_input_dim, rnn_hidden_dim, batch_first=False)
-        else:
-            self.rnn = None
-        # Mòdul d'atenció temporal (multi-head) si es sol·licita
-        if use_attention:
-            # Fem servir MultiheadAttention de PyTorch: embed_dim = hidden_dim, num_heads = num_attention_heads
-            self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_attention_heads, batch_first=False)
-        else:
-            self.attention = None
-        # Capa de decodificació final: de hidden_dim (o 2*hidden_dim si concatenem context d'atenció) a out_features
-        if use_attention:
-            self.decoder = nn.Linear(hidden_dim * 2, out_features)
-        else:
-            self.decoder = nn.Linear(hidden_dim, out_features)
-    
-    def forward_graphsage(self, data: Data):
-        """
-        Aplica les capes d'agregació GraphSAGE al graf donat (data).
-        Retorna un tensor de embeddings de mida [num_nodes, hidden_dim].
-        """
-        x = data.x  # features de nodes, mida [N, in_features]
-        # Apliquem primer Linear d'entrada si hi és
-        if len(self.conv_layers) > 0:
-            x = self.conv_layers[0](x)
-        N = x.size(0)
-        # Obtenim llistes d'adjacència per agregació. 
-        # Utilitzarem edge_index de data (esperem que sigui no dirigit o que conté parells en ambdues direccions).
-        if hasattr(data, 'edge_index'):
-            edge_index = data.edge_index
-        else:
-            # Si no hi ha arestes (cas extrem d'un sol node o dades no proporcionades)
-            edge_index = torch.empty((2,0), dtype=torch.long, device=x.device)
-        # Convertim edge_index a llistes de veïns per a facilitar l'agregació
-        # edge_index té forma [2, E] on E és número d'arestes, amb edge_index[0] = origen, edge_index[1] = destí
-        if edge_index.numel() > 0:
-            neighbors = [[] for _ in range(N)]
-            src, dst = edge_index
-            # assumim que edge_index inclou edges en les dues direccions; si no, caldria assegurar veïns no dirigits
-            for s, d in zip(src.tolist(), dst.tolist()):
-                neighbors[d].append(s)
-        else:
-            neighbors = [[] for _ in range(N)]
-        h = x  # inicialment, representació dels nodes
-        for i in range(self.num_layers):
-            new_h = torch.zeros_like(h)
-            # Agreguem veïns: per a cada node, fem mitjana dels veïns
-            # (GraphSAGE aggregator mean)
-            agg_messages = torch.zeros_like(h)
-            for node in range(N):
-                if neighbors[node]:
-                    nei_feats = h[neighbors[node]]
-                    agg_messages[node] = nei_feats.mean(dim=0)
-                else:
-                    agg_messages[node] = torch.zeros(h.size(1), device=h.device)
-            # Apliquem transformacions lineals i combinem
-            h_self = self.W_self[i](h)
-            h_nei = self.W_nei[i](agg_messages)
-            combined = h_self + h_nei
-            # Aplicar BatchNorm, activació i dropout
-            combined = self.batch_norms[i](combined)
-            combined = self.activation(combined)
-            combined = self.dropout(combined)
-            # Afegim connexió residual (skip connection)
-            h = h + combined  # residual
-        return h  # embeddings finals dels nodes
+            if self.temporal_model == 'lstm':
+                self.rnn = nn.LSTM(hidden_dim, rnn_hidden_dim, batch_first=False)
+            elif self.temporal_model == 'gru':
+                self.rnn = nn.GRU(hidden_dim, rnn_hidden_dim, batch_first=False)
+        elif self.temporal_model == 'transformer':
+            # Codificació posicional sinusoidal per a seqüències temporals
+            self.max_seq_len = 1000
+            pe = torch.zeros(self.max_seq_len, hidden_dim)
+            position = torch.arange(0, self.max_seq_len, dtype=torch.float).unsqueeze(1)
+            div_term = torch.exp(torch.arange(0, hidden_dim, 2, dtype=torch.float) * (-math.log(10000.0) / hidden_dim))
+            pe[:, 0::2] = torch.sin(position * div_term)
+            pe[:, 1::2] = torch.cos(position * div_term)
+            self.register_buffer('positional_encoding', pe)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, 
+                                                      dim_feedforward=hidden_dim*2, dropout=dropout, batch_first=False)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        elif self.temporal_model == 'evolvegcn':
+            # EvolveGCN: utilitzem una GRUCell per evolupar els paràmetres de cada capa GNN
+            # Inicialitzem l'estat ocult de cada capa GNN com els seus pesos vectoritzats
+            self.evolve_gcns = nn.ModuleList()
+            # Guardem els pesos inicials de cada capa (com a tensor pla)
+            self.init_weights = []
+            for conv in self.convs:
+                flat = torch.cat([p.data.view(-1) for p in conv.parameters()], dim=0)
+                self.init_weights.append(flat.clone())
+            for conv in self.convs:
+                # dimensionem hidden_size com nombre de paràmetres de la capa conv
+                num_params = 0
+                for p in conv.parameters():
+                    num_params += p.numel()
+                # GRUCell que pren com input un vector de longitud hidden_dim (p.ex. embedding mitjà) i genera nou pes (hidden_size = num_params)
+                self.evolve_gcns.append(nn.GRUCell(hidden_dim, num_params))
+            # Atribut per emmagatzemar l'estat dels pesos evolutius de cada capa (inicialment els pesos inicials aplanats)
+            # Calculem la llargada màxima de vector de paràmetres
+            max_len = max(w.numel() for w in self.init_weights)
+
+            # Creem el tensor d'estat inicial a partir dels pesos inicials
+            hidden = torch.zeros(len(self.convs), max_len, dtype=torch.float)
+            for i, w in enumerate(self.init_weights):
+                hidden[i, :w.numel()] = w  # copiem els primers numel(w) valors
+
+            # Registram el buffer amb l'estat inicialitzat als pesos del model
+            self.register_buffer('evolve_hidden_state', hidden)
+        # Mecanisme d'atenció temporal multi-cap (només aplicable combinat amb RNN)
+        self.attention = None
+        if self.temporal_model in ['lstm', 'gru']:
+            # Afegir atenció multi-head sobre la seqüència temporal de sortides del RNN
+            self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=False)
+        
+        # Capa de sortida (decodificador)
+        # Si hi ha atenció temporal, la sortida combina hidden state + context d'atenció -> dimensió 2*hidden_dim
+        decoder_in_dim = hidden_dim * 2 if self.attention is not None else hidden_dim
+        self.decoder = nn.Linear(decoder_in_dim, out_features)
+        
+    def forward_graph(self, data):
+        """Aplica la/les capes GNN espacials (GraphSAGE/GAT/GIN) a un graf individual i retorna embeddings nodals."""
+        x, edge_index = data.x, data.edge_index
+        device = next(self.parameters()).device
+        x = x.to(device)
+        edge_index = edge_index.to(device)
+
+        # Embedding d'estació opcional
+        if self.station_embedding is not None and hasattr(data, 'station_idx'):
+            station_idx = torch.tensor(data.station_idx, dtype=torch.long, device=device)
+            station_emb = self.station_embedding(station_idx)
+            x = torch.cat([x, station_emb], dim=1)
+
+        # Projecció inicial
+        h = self.input_proj(x)
+
+        # Propagació per les capes de graf
+        for i, conv in enumerate(self.convs):
+            if self.temporal_model == 'evolvegcn':
+                # 1) Estat ocult previ i característiques resum
+                avg_feature = h.mean(dim=0, keepdim=True)  # (1, hidden_dim)
+                prev_weights = self.evolve_hidden_state[i, :self.evolve_gcns[i].hidden_size].unsqueeze(0)
+
+                # 2) Calculem l'offset amb GRUCell
+                offset_flat = self.evolve_gcns[i](avg_feature, prev_weights)  # (1, num_params_i)
+
+                # 3) Actualitzem l'estat ocult
+                self.evolve_hidden_state[i, :offset_flat.size(1)] = offset_flat.squeeze(0)
+
+                # 4) Combine with initial weights
+                init_flat = self.init_weights[i].to(offset_flat.device).unsqueeze(0)
+                new_weight_flat = init_flat + offset_flat  # (1, num_params_i)
+
+                # 5) Assignem els nous valors sense canviar l'objecte Parameter
+                idx = 0
+                for param in conv.parameters():
+                    numel = param.numel()
+                    seg = new_weight_flat[0, idx:idx + numel].view_as(param)
+                    param.data.copy_(seg)
+                    idx += numel
+
+                # 6) Propaguem amb la capa actualitzada
+                h_new = conv(h, edge_index)
+            else:
+                # Propagació normal
+                h_new = conv(h, edge_index)
+
+            # Post-processament: BN -> ReLU -> Dropout
+            h_new = self.batch_norms[i](h_new)
+            h_new = self.activation(h_new)
+            h_new = self.dropout(h_new)
+
+            # Residual
+            h = h + h_new
+
+        return h  # tensor de mida [num_nodes, hidden_dim]
+
     
     def forward(self, data_sequence):
         """
-        Execució endavant del model.
-        data_sequence pot ser:
-         - Una llista d'objectes Data (seqüència temporal).
-         - Un únic objecte Data (cas sense seqüència, predicció instantània).
-        Retorna:
-         - Un tensor de prediccions de mida [num_nodes, out_features] per a l'últim instant de la seqüència (horitzó de predicció).
+        Execució endavant per a una seqüència temporal de grafs (data_sequence pot ser llista de Data o un sol Data).
+        Retorna les prediccions per als nodes del darrer graf de la seqüència.
         """
-        # Si data_sequence és un sol graf, el convertim a llista d'un element
-        if isinstance(data_sequence, Data):
+        # Si es passa un únic graf, el convertim en llista
+        if isinstance(data_sequence, torch_geometric.data.Data):
             data_sequence = [data_sequence]
-        seq_length = len(data_sequence)
-        device = next(self.parameters()).device  # obtenim device del model (CPU o CUDA)
-        # Si no tenim component seqüencial i la seqüència conté múltiples grafs, només considerem l'últim com a input directe
-        if self.rnn is None and seq_length > 1:
-            data_seq_input = data_sequence[:-1]  # fins al penúltim
-            data_target = data_sequence[-1]
-            # Podríem ignorar tot i només fer servir l'últim input per predir sobre ell mateix.
-            # Per consistència, agafem l'últim graf i farem forward estàtic.
-            data_sequence = [data_sequence[-2], data_sequence[-1]] if seq_length >= 2 else [data_sequence[-1]]
-            seq_length = len(data_sequence)
-        # Filtrar nodes comuns a tota la seqüència per evitar problemes de dimensions
-        common_ids = None
-        for data in data_sequence:
-            ids = list(data.ids) if hasattr(data, "ids") else list(range(data.x.size(0)))
-            id_set = set(ids)
-            if common_ids is None:
-                common_ids = id_set
-            else:
-                common_ids &= id_set
-        if common_ids is None:
-            common_ids = set()
-        # Si common_ids és menor que total, filtrem cada graf
-        if common_ids and any(len(data.x) != len(common_ids) for data in data_sequence):
-            common_ids = sorted(list(common_ids))
-            common_idx_maps = []
-            # Creem un mapping d'ID a nou index per als comuns
-            id_to_new_idx = {id_val: idx for idx, id_val in enumerate(common_ids)}
-            filtered_sequence = []
+        seq_len = len(data_sequence)
+        device = next(self.parameters()).device
+        
+        # Garantim que tots els grafs tenen els mateixos nodes si es fa servir un model estàtic (no EvolveGCN)
+        if self.temporal_model != 'evolvegcn':
+            # Identifiquem IDs comuns
+            common_ids = None
             for data in data_sequence:
-                if hasattr(data, "ids"):
-                    # indices dels nodes comuns en aquest graf
-                    idx_keep = [i for i, id_val in enumerate(data.ids) if id_val in id_to_new_idx]
-                else:
-                    # si no hi ha ids, assumim mateix ordre i número
-                    idx_keep = list(range(len(common_ids)))
-                idx_keep_tensor = torch.tensor(idx_keep, dtype=torch.long)
-                # Utilitzem subgraph de torch_geometric.utils per tallar el graf als idx seleccionats
-                new_edge_index, new_edge_attr = subgraph(idx_keep_tensor, data.edge_index, getattr(data, 'edge_attr', None), relabel_nodes=True)
-                new_x = data.x[idx_keep_tensor]
-                # Construïm un nou Data
-                new_data = Data(x=new_x, edge_index=new_edge_index, edge_attr=new_edge_attr)
-                # Filtrar també la llista d'ids
-                if hasattr(data, "ids"):
-                    new_data.ids = [data.ids[i] for i in idx_keep]
-                # Mantenim el timestamp si existeix
-                if hasattr(data, "timestamp"):
-                    new_data.timestamp = data.timestamp
-                filtered_sequence.append(new_data)
-            data_sequence = filtered_sequence
-            # Actualitzem seq_length si s'ha modificat
-            seq_length = len(data_sequence)
-        # Llista per emmagatzemar embeddings de cada pas temporal
+                ids = list(data.ids) if hasattr(data, 'ids') else list(range(data.x.size(0)))
+                id_set = set(ids)
+                common_ids = id_set if common_ids is None else common_ids & id_set
+            common_ids = sorted(list(common_ids)) if common_ids is not None else []
+            if common_ids and any(data.x.size(0) != len(common_ids) for data in data_sequence):
+                # Filtrar cada graf perquè només contingui els nodes comuns
+                new_seq = []
+                for data in data_sequence:
+                    # indices a conservar
+                    if hasattr(data, 'ids'):
+                        idx_keep = [i for i, id_val in enumerate(data.ids) if id_val in common_ids]
+                    else:
+                        idx_keep = list(range(len(common_ids)))
+                    idx_keep_tensor = torch.tensor(idx_keep, dtype=torch.long)
+                    # Creem subgraf amb aquests nodes
+                    new_edge_index, new_edge_attr = subgraph(idx_keep_tensor, 
+                                              data.edge_index, getattr(data, 'edge_attr', None), relabel_nodes=True)
+                    new_x = data.x[idx_keep_tensor]
+                    new_data = torch_geometric.data.Data(x=new_x, edge_index=new_edge_index, edge_attr=new_edge_attr)
+                    if hasattr(data, 'ids'):
+                        new_data.ids = [data.ids[i] for i in idx_keep]
+                    if hasattr(data, 'station_idx'):
+                        new_data.station_idx = [data.station_idx[i] for i in idx_keep]
+                    if hasattr(data, 'timestamp'):
+                        new_data.timestamp = data.timestamp
+                    new_seq.append(new_data)
+                data_sequence = new_seq
+                seq_len = len(data_sequence)
+        
+        # Llista per emmagatzemar els embeddings de nodes a cada pas
         node_embeddings_seq = []
         for t, data in enumerate(data_sequence):
-            data = data.to(device)
-            # Apliquem GraphSAGE al graf d'aquest timestep per obtenir embeddings
-            node_emb = self.forward_graphsage(data)
-            node_embeddings_seq.append(node_emb)
-        # Convertim la llista a tensor de seqüència [seq_len, num_nodes, hidden_dim]
-        # Assegurem que tots tenen la mateixa N (després del filtrat comú).
-        node_embeddings_seq = torch.stack(node_embeddings_seq, dim=0)  # shape: (T, N, hidden_dim)
-        # Si tenim RNN (LSTM/GRU), passem la seqüència pel RNN
+            # Obtenim embeddings espacials per al pas t
+            h_t = self.forward_graph(data)
+            node_embeddings_seq.append(h_t)
+        # Tensor de mida [seq_len, num_nodes, hidden_dim]
+        node_embeddings_seq = torch.stack(node_embeddings_seq, dim=0).to(device)
+        
+        # Si no hi ha model temporal, prenem directament l'últim embedding
+        if self.temporal_model in ['none', '', None]:
+            final_emb = node_embeddings_seq[-1]  # darrer pas temporal
+            preds = self.decoder(final_emb)
+            return preds  # [num_nodes, out_features]
+        
+        # Si hi ha RNN temporal (LSTM/GRU)
         if self.rnn is not None:
-            # Inicialitzem estat ocult (h0, c0) a zeros per a cada node com a seqüència independent
-            # PyTorch ho fa automàticament si no proporcionem h0, per tant ho omitirem per claredat.
-            # Executem RNN sobre la seqüència sencera
-            rnn_out, hidden = self.rnn(node_embeddings_seq)
-            # rnn_out té shape (T, N, hidden_dim). Agafem l'últim pas (T-1) com a representació final de cada node.
-            last_out = rnn_out[-1]  # shape: (N, hidden_dim)
-            if self.use_attention and self.attention is not None:
-                # Apliquem atenció temporal: query = l'últim hidden, key = value = tota la seqüència de sortides RNN
-                # Hem de donar shape (L, N, E) a key i value, i (1, N, E) a query.
-                query = last_out.unsqueeze(0)        # (1, N, hidden_dim)
-                key = value = rnn_out                # (T, N, hidden_dim)
+            rnn_out, _ = self.rnn(node_embeddings_seq)  # sortida de mida [seq_len, num_nodes, hidden_dim]
+            last_out = rnn_out[-1]  # últim pas (per cada node)
+            if self.attention is not None:
+                # Atenció multi-cap sobre totes les sortides temporals del RNN
+                query = last_out.unsqueeze(0)   # shape (1, num_nodes, hidden_dim)
+                key = value = rnn_out           # shape (seq_len, num_nodes, hidden_dim)
                 attn_output, attn_weights = self.attention(query, key, value)
-                # attn_output shape: (1, N, hidden_dim)
-                context = attn_output.squeeze(0)     # (N, hidden_dim)
-                # Concatem l'últim hidden i el context d'atenció per formar la representació final
-                combined = torch.cat([last_out, context], dim=1)  # (N, 2*hidden_dim)
-                # Decodifiquem a sortida
-                preds = self.decoder(combined)  # (N, out_features)
+                context = attn_output.squeeze(0)   # [num_nodes, hidden_dim]
+                # concatenem l'últim hidden state amb el context atencional
+                last_out = torch.cat([last_out, context], dim=1)  # [num_nodes, 2*hidden_dim]
+            preds = self.decoder(last_out)  # [num_nodes, out_features]
+            return preds
+        
+        # Si hi ha Transformer temporal
+        if self.transformer_encoder is not None:
+            seq_len, num_nodes, feat_dim = node_embeddings_seq.shape
+            # Afegim encoding posicional a la seqüència
+            if seq_len > self.max_seq_len:
+                # si la seqüència és molt llarga, calculem posicional al vol
+                position = torch.arange(0, seq_len, dtype=torch.float, device=device).unsqueeze(1)
+                div_term = torch.exp(torch.arange(0, feat_dim, 2, dtype=torch.float, device=device) * (-math.log(10000.0) / feat_dim))
+                pos_enc = torch.zeros(seq_len, feat_dim, device=device)
+                pos_enc[:, 0::2] = torch.sin(position * div_term)
+                pos_enc[:, 1::2] = torch.cos(position * div_term)
             else:
-                # Sense atenció: fem servir directament l'últim estat com a representació
-                preds = self.decoder(last_out)  # (N, out_features)
-        elif self.use_transformer:
-            # Opcional: si s'hagués implementat un transformer temporal en lloc de RNN.
-            # (No completat per simplicitat; es podria afegir pos encodings i self-attention here)
-            # Utilitzarem l'últim embedding directament per predir (model sense estat temporal explícit)
-            last_emb = node_embeddings_seq[-1]  # (N, hidden_dim)
-            preds = self.decoder(last_emb)      # (N, out_features)
-        else:
-            # Cas sense RNN i seqüència de longitud 1: simplement apliquem decoder al embedding del graf
-            emb = node_embeddings_seq[-1]  # (N, hidden_dim)
-            preds = self.decoder(emb)      # (N, out_features)
+                pos_enc = self.positional_encoding[:seq_len, :].to(device)
+            node_embeddings_seq = node_embeddings_seq + pos_enc.unsqueeze(1)  # afegim pos enc a cada node
+            transformer_out = self.transformer_encoder(node_embeddings_seq)  # [seq_len, num_nodes, hidden_dim]
+            last_out = transformer_out[-1]  # [num_nodes, hidden_dim]
+            preds = self.decoder(last_out)
+            return preds
+        
+        # Si hi ha EvolveGCN: ja hem anat evolucionant la GNN durant forward_graph a cada pas,
+        # per tant la seqüència node_embeddings_seq incorpora ja l'evolució. Només cal predir del darrer.
+        final_emb = node_embeddings_seq[-1]  # [num_nodes, hidden_dim]
+        preds = self.decoder(final_emb)
         return preds
 
-def train_model(model: MeteoGraphSAGE, train_sequences: list, val_sequences: list = None,
-                epochs: int = 50, learning_rate: float = 0.001, target_idx: int = 0):
+# Funcions d'entrenament i avaluació actualitzades
+def train_model(
+    model: MeteoGraphSAGEEnhanced,
+    train_data: list[dict],
+    val_data: list[dict] = None,
+    epochs: int = 50,
+    learning_rate: float = 0.001,
+    target_idx: int = 0
+):
     """
-    Entrena el model amb les seqüències de train. Opcionalment, valida contra val_sequences.
-    target_idx indica l'índex de la variable objectiu en les features (si out_features=1).
-    Retorna el model entrenat i els històrics de pèrdues de train i val.
+    Entrena el model sobre seqüències de grafs. 
+    train_data i val_data són llistes de dict amb claus:
+      - 'data': List[Data]
+      - 'mask': Tensor [seq_len, N]
+      - 'ids' : List[id]  (opcional, si el model no fa servir station_idx)
     """
     device = next(model.parameters()).device
-    model.train()  # mode entrenament
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    # Funció de pèrdua: si out_features == 1 usem MSE sobre variable objectiu
-    # si out_features > 1 (prediccions multivariables), sumem MSE de totes o es pot fer MSE global vectorial.
     criterion = nn.MSELoss()
-    train_loss_history = []
-    val_loss_history = []
-    for epoch in range(1, epochs+1):
-        epoch_loss = 0.0
-        for seq in train_sequences:
-            # Prepara dades input (tota la seqüència menys l'últim) i label (últim valor real)
+    logger = logging.getLogger(__name__)
+    model.train()
+    history = {'train_loss': [], 'val_loss': []}
+
+    for epoch in range(1, epochs + 1):
+        # Barregem seqüències
+        np.random.shuffle(train_data)
+        total_loss = 0.0
+
+        for seq_dict in train_data:
+            seq = seq_dict['data']         # ara és List[Data]
+            mask = seq_dict.get('mask')    # opcional
             if len(seq) < 2:
-                # Seqüència massa curta per entrenar (necessitem almenys 1 input i 1 target)
                 continue
-            input_seq = seq[:-1]
+
+            # Preparem input i target
+            input_seq   = seq[:-1]
             target_graph = seq[-1]
+
             # Forward
             preds = model(input_seq)
-            # Obtenir valors objectiu reals
-            # Si el model prediu una sola variable:
+
+            # True values
             if model.out_features == 1:
-                # Fem servir target_idx per extreure la variable objectiu
-                target_vals = target_graph.x[:, target_idx].to(device)
-                # preds té shape (N,1), convertim a (N,)
-                pred_vals = preds.view(-1)
+                # No aplanem: mantenim la dimensió de feature com a 1
+                pred_vals = preds                                     # [N, 1]
+                true_vals = target_graph.x[:, target_idx].unsqueeze(1).to(device)  # [N, 1]
             else:
-                # Si prediu múltiples variables, comparem tot el vector de features
-                target_vals = target_graph.x.to(device)
-                pred_vals = preds
-            # Calculem pèrdua (error mig quadràtic)
-            loss = criterion(pred_vals, target_vals)
-            # Backprop i optimització
+                pred_vals = preds                                     # [N, F]
+                true_vals = target_graph.x.to(device)                 # [N, F]
+
+
+            # Pèrdua amb màscara (si existeix)
+            if mask is not None:
+                # mask: [N], errors: [N, F]  → fem broadcast a [N, F]
+                node_mask = mask[-1].to(device).float().unsqueeze(1)  # ara [N,1]
+                errors = (pred_vals - true_vals)**2                  # [N, F]
+                masked_errors = errors * node_mask                   # [N, F], zeros on padded nodes
+                # sumar sobre tots dos eixos i dividir pel nombre real d'elements (nodes actius × features)
+                n_active = node_mask.sum() * pred_vals.size(1) + 1e-6
+                loss = masked_errors.sum() / n_active
+            else:
+                loss = criterion(pred_vals, true_vals)
+
+
+            # Backprop
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-        # Mètrica de pèrdua de training mitjana per seqüència
-        if len(train_sequences) > 0:
-            epoch_loss /= len(train_sequences)
-        train_loss_history.append(epoch_loss)
-        # Avaluació en validació
+            total_loss += loss.item()
+
+        # Historial i logging entrenament
+        avg_loss = total_loss / len(train_data) if train_data else 0.0
+        history['train_loss'].append(avg_loss)
+
+        # Validació
         val_loss = 0.0
-        if val_sequences:
+        if val_data:
             model.eval()
             with torch.no_grad():
-                for seq in val_sequences:
+                for seq_dict in val_data:
+                    seq = seq_dict['data']
+                    mask = seq_dict.get('mask')
                     if len(seq) < 2:
                         continue
-                    input_seq = seq[:-1]
+                    input_seq    = seq[:-1]
                     target_graph = seq[-1]
                     preds = model(input_seq)
-                    if model.out_features == 1:
-                        true_vals = target_graph.x[:, target_idx].to(device)
-                        pred_vals = preds.view(-1)
-                    else:
-                        true_vals = target_graph.x.to(device)
-                        pred_vals = preds
-                    loss_val = criterion(pred_vals, true_vals)
-                    val_loss += loss_val.item()
-                if len(val_sequences) > 0:
-                    val_loss /= len(val_sequences)
-            model.train()
-        val_loss_history.append(val_loss)
-        logging.info(f"Època {epoch}/{epochs} - Pèrdua train: {epoch_loss:.4f} - Pèrdua val: {val_loss:.4f}")
-    return model, train_loss_history, val_loss_history
 
-def evaluate_model(model: MeteoGraphSAGE, test_sequences: list, target_idx: int = 0):
+                    # 1) Preparem pred_vals i true_vals mantenint sempre [N, F]
+                    if model.out_features == 1:
+                        pred_vals = preds                                    # [N,1]
+                        true_vals = target_graph.x[:, target_idx].unsqueeze(1).to(device)  # [N,1]
+                    else:
+                        pred_vals = preds                                    # [N,F]
+                        true_vals = target_graph.x.to(device)                # [N,F]
+
+                    # 2) Pèrdua amb màscara
+                    if mask is not None:
+                        node_mask = mask[-1].to(device).float().unsqueeze(1)  # [N,1]
+                        errors = (pred_vals - true_vals)**2                  # [N,F]
+                        masked_errors = errors * node_mask                   # [N,F]
+                        n_active = node_mask.sum() * pred_vals.size(1) + 1e-6
+                        loss_val = masked_errors.sum() / n_active
+                    else:
+                        loss_val = criterion(pred_vals, true_vals)
+
+                    val_loss += loss_val.item()
+            val_loss = val_loss / len(val_data) if val_data else 0.0
+            history['val_loss'].append(val_loss)
+            model.train()
+
+        logger.info(f"Època {epoch}/{epochs} - entr.: {avg_loss:.4f}, val.: {val_loss:.4f}")
+
+    return history
+
+def evaluate_model(model: MeteoGraphSAGEEnhanced, test_data: list, target_idx: int = 0):
     """
-    Avalua el model sobre el conjunt de test. Retorna diccionari de mètriques (p. ex. RMSE).
+    Avalua el model amb seqüències de test.
+    Retorna un dict amb:
+      - 'MSE': scalar o llista de MSE per variable
+      - 'RMSE': scalar o llista de RMSE per variable
     """
     device = next(model.parameters()).device
     model.eval()
-    total_mse = 0.0
+    total_mse = None
     count = 0
-    # Podem calcular mètriques per node o globals; aquí fem global MSE i RMSE
+
     with torch.no_grad():
-        for seq in test_sequences:
+        for seq in test_data:
             if len(seq) < 2:
                 continue
             input_seq = seq[:-1]
             target_graph = seq[-1]
-            preds = model(input_seq)
-            if model.out_features == 1:
-                true_vals = target_graph.x[:, target_idx].to(device)
-                pred_vals = preds.view(-1)
-            else:
-                true_vals = target_graph.x.to(device)
-                pred_vals = preds
-            # Suma de l'error quadràtic
-            mse = ((pred_vals - true_vals) ** 2).mean().item()
-            total_mse += mse
-            count += 1
-    avg_mse = total_mse / count if count > 0 else 0.0
-    rmse = math.sqrt(avg_mse)
-    logging.info(f"Resultats de test - MSE: {avg_mse:.4f} - RMSE: {rmse:.4f}")
-    return {"MSE": avg_mse, "RMSE": rmse}
+            preds = model(input_seq)  # [N] o [N, F]
 
-def predict_for_station(model: MeteoGraphSAGE, data_sequence: list, station_id: int,
+            if model.out_features == 1:
+                true_vals = target_graph.x[:, target_idx].to(device)       # [N]
+                pred_vals = preds.view(-1)                                 # [N]
+                errors = (pred_vals - true_vals) ** 2                      # [N]
+                mse_sample = errors.mean()                                # scalar
+            else:
+                true_vals = target_graph.x.to(device)                     # [N, F]
+                pred_vals = preds                                         # [N, F]
+                errors = (pred_vals - true_vals) ** 2                     # [N, F]
+                # MSE per variable: mean sobre l’eix dels nodes
+                mse_sample = errors.mean(dim=0)                          # [F]
+
+            # Acumulem
+            if total_mse is None:
+                total_mse = mse_sample
+            else:
+                total_mse = total_mse + mse_sample
+            count += 1
+
+    if count == 0:
+        return {"MSE": 0.0, "RMSE": 0.0}
+
+    # Mitjana de totes les mostres
+    avg_mse = total_mse / count
+
+    # RMSE: sqrt(MSE)
+    if isinstance(avg_mse, torch.Tensor):
+        rmse = torch.sqrt(avg_mse)
+        mse_out = avg_mse.tolist()
+        rmse_out = rmse.tolist()
+    else:
+        rmse = math.sqrt(avg_mse.item())
+        mse_out = avg_mse.item()
+        rmse_out = rmse
+
+    print(f"Resultats de Test - MSE: {mse_out}, RMSE: {rmse_out}")
+    return {"MSE": mse_out, "RMSE": rmse_out}
+
+def predict_for_station(model: MeteoGraphSAGEEnhanced, data_sequence: list, station_id: int,
                         target_idx: int = 0, horizon: int = 1):
     """
-    Realitza prediccions per a una estació individual donada (station_id) a partir d'una seqüència històrica.
-    Retorna una llista amb les prediccions successives (fins a 'horizon' passos endavant).
+    Realitza prediccions iteratives (autoregressives) per a una estació individual donada (station_id) 
+    a partir d'una seqüència històrica. Retorna una llista amb les prediccions successives fins a 'horizon' passos endavant.
     """
     device = next(model.parameters()).device
     model.eval()
     preds_list = []
-    # Creem una còpia de la seqüència per no modificar l'original
-    seq_copy = [data.clone() for data in data_sequence]
+    # Còpia de la seqüència per no modificar l'original
+    seq_copy = [deepcopy(data) for data in data_sequence]
     # Ens assegurem que la seqüència està al device correcte
     for data in seq_copy:
         data.to(device)
     current_sequence = seq_copy
-    # Mapeig d'index del node de l'estació en cada graf (assumim id està present en tots)
-    # Trobem l'índex de l'estació objectiu en el darrer graf de la seqüència
+    # Trobar l'índex del node corresponent a l'estació dins de l'últim graf de la seqüència
     station_index = None
-    if hasattr(current_sequence[-1], "ids"):
-        # Busquem l'estació en la llista d'ids
+    if hasattr(current_sequence[-1], 'ids'):
         if station_id in current_sequence[-1].ids:
             station_index = current_sequence[-1].ids.index(station_id)
     else:
-        # Si no hi ha ids, assumim que station_id és un índex directe (cas fictici)
         station_index = station_id if station_id < current_sequence[-1].x.size(0) else None
     if station_index is None:
-        logging.warning(f"L'estació {station_id} no es troba en l'últim graf de la seqüència. Predicció no disponible.")
+        logging.warning(f"L'estació {station_id} no es troba en l'últim graf de la seqüència. No es pot fer predicció per aquesta estació.")
         return preds_list
     with torch.no_grad():
         for h in range(horizon):
-            # Utilitzem el model per predir el següent pas
+            # Predir el següent pas temporal amb el model
             preds = model(current_sequence)
             if model.out_features == 1:
                 pred_value = preds.view(-1)[station_index].item()
             else:
                 pred_value = preds[station_index, target_idx].item()
             preds_list.append(pred_value)
-            # Actualitzem la seqüència: afegim un nou Data amb aquesta predicció (com si fos el següent pas real)
-            # Per crear el nou graf futur:
+            # Actualitzar la seqüència afegint el nou pas predit
             last_graph = current_sequence[-1]
-            new_graph = last_graph.clone()  # copiem l'últim i li canviem la variable objectiu
-            # Actualitzem la variable objectiu de l'estació corresponent amb la predicció
-            new_val = pred_value
+            new_graph = last_graph.clone()
+            # Substituïm la variable objectiu de l'estació pel valor predit
             if model.out_features == 1:
-                new_graph.x[station_index, target_idx] = new_val
+                new_graph.x[station_index, target_idx] = pred_value
             else:
-                # Si són multivariables, només substituïm la que predim i deixem les altres igual (o es podria predir totes)
-                new_graph.x[station_index, target_idx] = new_val
-            # Afegim el nou graf a la seqüència (i llevem el primer si mantenim finestra fixa)
+                new_graph.x[station_index, target_idx] = pred_value
+            # Afegim el nou graf al final de la seqüència (podem opcionalment treure el primer per mantenir finestra fixa)
             current_sequence.append(new_graph)
-            # Opcional: es podria treure current_sequence[0] si volem finestra lliscant de mida constant
+            # (Opcional) Eliminar current_sequence[0] per mantenir la mida de finestra constant
     return preds_list
 
-def predict_region_to_netcdf(model: MeteoGraphSAGE, data_sequence: list, grid_res: float = 0.1,
-                             target_idx: int = 0, file_path: str = "prediction.nc"):
+def predict_region_to_netcdf(
+    model: MeteoGraphSAGEEnhanced,
+    data_sequence: list,
+    grid_res: float = 0.1,
+    target_idx: int = 0,
+    file_path: str = "prediction.nc"
+):
     """
-    Utilitza el model per predir la variable objectiu al proper pas en totes les estacions, 
-    després interpola espacialment aquests resultats a una graella regular i guarda en un fitxer NetCDF.
+    Prediu la variable objectiu al proper pas temporal per a totes les estacions,
+    i genera un mapa regional interpolat en format NetCDF.
+
+    Args:
+        model: instància de MeteoGraphSAGEEnhanced ja entrenat.
+        data_sequence: llista de Data objects ordenats cronològicament.
+        grid_res: resolució de la graella en graus (lat/lon).
+        target_idx: índex de la variable objectiu dins de data.x (quan out_features>1).
+        file_path: ruta de sortida del fitxer NetCDF.
     """
+    if not data_sequence:
+        logging.error("Seqüència buida: no es pot generar predicció.")
+        return
+
     device = next(model.parameters()).device
     model.eval()
-    if len(data_sequence) < 1:
-        logging.error("Seqüència buida, no es pot generar predicció regional.")
-        return
-    # Assegurar que la seqüència és al device
+
+    # 1) Portar tots els Data al mateix device
+    seq = []
     for data in data_sequence:
-        data.to(device)
-    # Predir per l'últim pas (seqüència completa com input)
+        d = deepcopy(data)  # per no mutar l'original
+        # Always move x and edge_index
+        d.x = d.x.to(device)
+        d.edge_index = d.edge_index.to(device)
+        # Only move edge_attr if it exists
+        if hasattr(d, 'edge_attr') and d.edge_attr is not None:
+            d.edge_attr = d.edge_attr.to(device)
+        # Only move pos if it exists
+        if hasattr(d, 'pos') and d.pos is not None:
+            d.pos = d.pos.to(device)
+        seq.append(d)
+
+
+    # 2) Calcular la predicció per al darrer pas
     with torch.no_grad():
-        preds = model(data_sequence)
-    # Obtenir coordenades i prediccions de cada estació
-    last_graph = data_sequence[-1]
-    if not hasattr(last_graph, "pos") and hasattr(last_graph, "x"):
-        # Si posicions no estan explícites, comprovem si lat i lon estan en features
-        # (No es va guardar explicitament pos a toData, possiblement lat, lon són columnes extra)
-        try:
-            lat_idx = FEATURE_NAMES.index('lat')
-            lon_idx = FEATURE_NAMES.index('lon')
-            coords = [(last_graph.x[i, lat_idx].item(), last_graph.x[i, lon_idx].item()) for i in range(last_graph.x.size(0))]
-        except:
-            logging.error("No s'han trobat coordenades 'pos' o 'lat/lon' als nodes.")
-            return
-    else:
-        coords = [(float(p[0]), float(p[1])) for p in last_graph.pos]  # assumim pos = [lat, lon] per node
-    preds = preds.detach().cpu().numpy()
+        preds = model(seq).cpu().numpy()
+
+    last = seq[-1]
+    if not hasattr(last, 'edge_attr'): logging.warning("No edge_attr: s'usarà graella sense atributs")
+    if last.pos.size(1) < 2: raise ValueError("pos ha de tenir almenys lat i lon")
+    coords = last.pos[:, :2].cpu().numpy()   # array Nx2: [lat, lon]
+    N = coords.shape[0]
+
+    # 3) Extreure vector de prediccions
     if model.out_features == 1:
-        pred_values = preds.reshape(-1)
+        values = preds.reshape(-1)
     else:
-        pred_values = preds[:, target_idx]
-    # Convertim lat/lon de graus a rad si fem servir fórmula haversine (per ara no, usem dist euclidea approx)
-    lats = [c[0] for c in coords]
-    lons = [c[1] for c in coords]
-    # Definir graella
-    min_lat, max_lat = min(lats), max(lats)
-    min_lon, max_lon = min(lons), max(lons)
+        values = preds[:, target_idx]
+
+    # 4) Desnormalització si convé
+    var_name = FEATURE_NAMES[target_idx]
+    if hasattr(last, "norm_params") and var_name in last.norm_params:
+        mean = last.norm_params[var_name]["mean"]
+        std = last.norm_params[var_name]["std"]
+        values = values * std + mean
+        # Invertir escales específiques
+        if var_name in ("Temp", "DewPoint", "PotentialTemp"):
+            values -= 273.15
+        elif var_name == "Humitat":
+            values *= 100.0
+        elif var_name == "Patm":
+            values += 1013.0
+        elif var_name == "Pluja":
+            values = np.expm1(values)
+
+    # 5) Definir graella regular
+    min_lat, min_lon = coords.min(axis=0)
+    max_lat, max_lon = coords.max(axis=0)
     lat_grid = np.arange(min_lat, max_lat + 1e-9, grid_res)
     lon_grid = np.arange(min_lon, max_lon + 1e-9, grid_res)
-    nlat = len(lat_grid)
-    nlon = len(lon_grid)
-    pred_grid = np.full((nlat, nlon), np.nan, dtype=np.float32)
-    # Interpolació IDW
-    for i, lat in enumerate(lat_grid):
-        for j, lon in enumerate(lon_grid):
-            # Calcular distàncies de (lat, lon) a cada estació
-            # Convertim diferència en graus a distància aproximada en km per ponderar (1 grau lat ~ 111 km, 1 grau lon ~ cos(lat)*111 km)
-            dists = []
-            for (st_lat, st_lon) in coords:
-                dlat = (st_lat - lat) * 111.0  # km approx
-                dlon = (st_lon - lon) * 111.0 * math.cos(math.radians(lat))
-                d = math.sqrt(dlat**2 + dlon**2)
-                dists.append(d)
-            dists = np.array(dists)
-            # Evitem divisió per zero: si un punt coincideix exactament amb estació, prenem valor directe
-            if np.any(dists < 1e-6):
-                k = np.argmin(dists)
-                pred_val = pred_values[k]
-            else:
-                # Pesos = invers de la distància
-                w = 1.0 / (dists + 1e-6)
-                w /= w.sum()
-                pred_val = np.dot(w, pred_values)
-            pred_grid[i, j] = pred_val
-    # Crear fitxer NetCDF
-    nc = Dataset(file_path, "w", format="NETCDF4")
-    nc.createDimension("lat", nlat)
-    nc.createDimension("lon", nlon)
-    lat_var = nc.createVariable("lat", "f4", ("lat",))
-    lon_var = nc.createVariable("lon", "f4", ("lon",))
-    pred_var = nc.createVariable("prediction", "f4", ("lat", "lon"))
-    lat_var.units = "degrees_north"
-    lon_var.units = "degrees_east"
-    pred_var.units = "units"  # es podria especificar unitat real de la variable predita, p. ex. "degC" si és temperatura
-    lat_var[:] = lat_grid
-    lon_var[:] = lon_grid
-    pred_var[:, :] = pred_grid
-    nc.title = "Predicció interpolada"
-    nc.close()
-    logging.info(f"Fitxer NetCDF de predicció regional guardat a {file_path}")
+    nl, nm = lat_grid.size, lon_grid.size
+
+    # 6) Vectoritzar interpolació IDW
+    # Meshgrid de punts: shape (nl*nm, 2)
+    mesh_lon, mesh_lat = np.meshgrid(lon_grid, lat_grid)
+    grid_pts = np.column_stack([mesh_lat.ravel(), mesh_lon.ravel()])  # (G,2), G=nl*nm
+
+    # Calcular distàncies Euclidianes aproximades en km
+    # dlat ~ 111 km/deg, dlon ~ 111*cos(lat)/deg
+    cos_lat = np.cos(np.deg2rad(grid_pts[:, 0]))  # (G,)
+    dlat = (coords[:, 0:1] - grid_pts[None, :, 0]) * 111.0   # (N, G)
+    dlon = (coords[:, 1:2] - grid_pts[None, :, 1]) * 111.0 * cos_lat[None, :]
+    dists = np.hypot(dlat, dlon)  # (N, G)
+
+    eps = 1e-6
+    # Pesos IDW
+    weights = 1.0 / (dists + eps)         # (N, G)
+    # Casos on la distància és quasi zero
+    zero_mask = dists < 1e-6              # (N, G)
+    if zero_mask.any():
+        # Assignar pes 1 al node exacte i 0 la resta
+        weights[:] = 0.0
+        weights[zero_mask] = 1.0
+
+    # Normalitzar pesos per columna (cadascun dels G punts)
+    w_sum = weights.sum(axis=0, keepdims=True)  # (1, G)
+    weights /= w_sum
+
+    # Sumar per obtenir valors interpolats
+    pred_flat = (weights * values[:, None]).sum(axis=0)  # (G,)
+
+    # Reconstruir matriu (nl, nm)
+    pred_grid = pred_flat.reshape(nl, nm).astype(np.float32)
+
+    # 7) Escriure a NetCDF
+    with Dataset(file_path, "w", format="NETCDF4") as nc:
+        nc.createDimension("lat", nl)
+        nc.createDimension("lon", nm)
+
+        lat_var = nc.createVariable("lat", "f4", ("lat",))
+        lon_var = nc.createVariable("lon", "f4", ("lon",))
+        var = nc.createVariable(var_name, "f4", ("lat", "lon"), zlib=True, complevel=4)
+
+        lat_var[:] = lat_grid
+        lon_var[:] = lon_grid
+
+        # Assignar unitats segons variable
+        units_map = {
+            "Temp": "degC", "DewPoint": "degC", "PotentialTemp": "degC",
+            "Humitat": "%", "Pluja": "mm", "Patm": "hPa"
+        }
+        var.units = units_map.get(var_name, "units")
+        var[:, :] = pred_grid
+
+        nc.title = f"Predicció interpolada de '{var_name}'"
+        nc.history = f"Generat amb MeteoGraphSAGEEnhanced v2"
+    
+    logging.info(f"NetCDF guardat a: {file_path}")
 
 if __name__ == "__main__":
     # Configuració d'arguments (hiperparàmetres i opcions)
     parser = argparse.ArgumentParser(description="Entrenament i execució del model MeteoGraphSAGE")
     parser.add_argument("--data_dir", type=str, default="D:/DADES_METEO_PC_TO_DATA",
-                        help="Directori amb els fitxers .pt de dades (grafs horaris i seqüències)")
-    parser.add_argument("--group_by", type=str, choices=["none", "day", "month"], default="day",
-                        help="Tipus d'agrupació de seqüències temporals (none=cap agrupar, day=dia, month=mes)")
+                        help="Directori amb els fitxers pt de dades (grafs horaris i seqüències)")
+    parser.add_argument("--group_by", type=str, choices=["day", "month"], default="day",
+                        help="Tipus d'agrupació de seqüències temporals (day = per dia, month = per mes)")
     parser.add_argument("--history_length", type=int, default=None,
                         help="Longitud de la seqüència (finestra mòbil) si no s'agrupa per període fix")
     parser.add_argument("--target_variable", type=str, default="Temp",
                         help="Nom de la variable objectiu a predir (ha de ser una de FEATURE_NAMES)")
     parser.add_argument("--horizon", type=int, default=1,
-                        help="Horitzó de predicció (nombre de passos temporals endavant a predir)")
+                        help="Horitzó de predicció (nombre de passos temporals endavant a predir per a prediccions iteratives)")
     parser.add_argument("--out_all_vars", action="store_true",
-                        help="Si s'especifica, el model predirà totes les variables de cop en comptes d'una sola")
+                        help="Si s'especifica, el model predirà totes les variables de cop en comptes d'una sola variable objectiu")
     parser.add_argument("--epochs", type=int, default=50, help="Nombre d'èpoques d'entrenament")
     parser.add_argument("--hidden_dim", type=int, default=64, help="Dimensionalitat oculta (nombre de neurones ocultes)")
-    parser.add_argument("--graph_layers", type=int, default=2, help="Nombre de capes GraphSAGE")
-    parser.add_argument("--use_lstm", action="store_true", help="Utilitzar LSTM per a la seqüència temporal")
-    parser.add_argument("--use_gru", action="store_true", help="Utilitzar GRU per a la seqüència temporal")
-    parser.add_argument("--use_transformer", action="store_true", help="Utilitzar atenció tipus Transformer (experimental)")
-    parser.add_argument("--use_attention", action="store_true", help="Utilitzar mecanisme d'atenció temporal sobre RNN")
+    parser.add_argument("--graph_layers", type=int, default=2, help="Nombre de capes GraphSAGE (profunditat del graf)")
+    parser.add_argument("--station_embedding_dim", type=int, default=8,
+                        help="Dimensió de l'embedding d'estació (0 per no utilitzar embedding d'estació)")
     parser.add_argument("--learning_rate", type=float, default=0.001, help="Taxa d'aprenentatge")
     parser.add_argument("--output_netcdf", action="store_true", help="Generar fitxer NetCDF amb predicció regional interpolada")
     parser.add_argument("--predict_station", type=int, default=None, help="ID d'una estació per fer una predicció individual de demostració")
+    parser.add_argument("--aggregator", type=str, default="gat",
+                    choices=["sage","gat","gin"],
+                    help="Tipus d'agregació espacial")
+    parser.add_argument("--temporal_model", type=str, default="evolvegcn",
+                    choices=["none","lstm","gru","transformer","evolvegcn"],
+                    help="Model temporal")
+    parser.add_argument("--num_attention_heads", type=int, default=4, help="Nombre de caps per a GAT i atenció temporal (multi-head)")
+    parser.add_argument("--local_rank", type=int, default=int(os.environ.get("LOCAL_RANK", 0)))
+    parser.add_argument("--stride", type=int, default=None, help="Salt (stride) entre finestres de seqüències. Per defecte, igual a history_length (no solapat).")
+
     args = parser.parse_args()
 
-    # Selecció de device (GPU si disponible)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # Carregar seqüències de dades
-    sequences = create_sequences(args.data_dir, period=args.group_by, window_size=args.history_length)
-    if not sequences:
-        logging.error("No s'han trobat seqüències de dades per entrenar/predir.")
-        exit(1)
-    # Ordenar seqüències cronològicament (assumim que seqüències tenen atribut timestamp al primer element)
-    sequences.sort(key=lambda seq: seq[0].timestamp if hasattr(seq[0], "timestamp") else "")
-    # Dividir en train, val, test (80%-10%-10% per exemple)
-    total_seq = len(sequences)
-    train_end = int(total_seq * 0.8)
-    val_end = int(total_seq * 0.9)
-    train_sequences = sequences[:train_end]
-    val_sequences = sequences[train_end:val_end] if val_end > train_end else []
-    test_sequences = sequences[val_end:] if val_end < total_seq else []
-    logging.info(f"Seqüències: Train={len(train_sequences)}, Val={len(val_sequences)}, Test={len(test_sequences)}")
+    # ——— Iniciem DDP ————————————————————————————————
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(args.local_rank)
+    device = torch.device("cuda", args.local_rank)
+    world_size = dist.get_world_size()
+    rank = dist.get_rank()
+    # ————————————————————————————————————————————————
 
-    # Determinar dimensions de features i sortida
+    # Carrega seqüències en streaming, assignant-les a cada rank per round-robin
+    seq_dicts = []
+    for idx, seq in enumerate(create_sequences(
+         args.data_dir,
+         period=args.group_by,
+         window_size=args.history_length,
+         stride=(args.stride or args.history_length),
+         min_seq_len=2,
+         lazy=True
+    )):
+       # només conservar aquelles seqüències on idx % world_size == rank
+       if idx % world_size == rank:
+           seq_dicts.append(seq)
+    
+    if not seq_dicts:
+        logging.error("No s'han trobat seqüències de dades per entrenar/predictir.")
+        exit(1)
+
+    # 2) Separem les llistes de Data dels altres camps
+    sequences = [sd["data"] for sd in seq_dicts]      # List[List[Data]]
+    all_ids    = seq_dicts[0]["ids"]                  # List[id], comú a tots
+    masks      = [sd["mask"] for sd in seq_dicts]      # List[Tensor(seq_len, N)]
+
+    # Assegurar que hi ha correspondència de nombre de features amb FEATURE_NAMES (p.ex. si s'han afegit Vent_u, Vent_v)
     example_data = sequences[0][0]
     in_features = example_data.x.shape[1]
-    # Comprovem que la variable objectiu existeix
+    if in_features != len(FEATURE_NAMES):
+        # Si hi ha dues columnes extra, assumim que són Vent_u i Vent_v
+        if in_features == len(FEATURE_NAMES) + 2:
+            FEATURE_NAMES.extend(['Vent_u', 'Vent_v'])
+            logging.info("S'han detectat Vent_u i Vent_v en les dades. FEATURE_NAMES actualitzat amb aquests camps.")
+        else:
+            logging.warning(f"El nombre de features ({in_features}) no coincideix amb l'esperat ({len(FEATURE_NAMES)}). Procedint igualment.")
+    # Identificar l'índex de la variable objectiu
     if args.target_variable in FEATURE_NAMES:
         target_idx = FEATURE_NAMES.index(args.target_variable)
     else:
-        logging.warning(f"Variable objectiu {args.target_variable} no reconeguda, per defecte s'agafarà {FEATURE_NAMES[0]}")
+        logging.warning(f"Variable objectiu {args.target_variable} no reconeguda, s'utilitzarà {FEATURE_NAMES[0]} per defecte.")
         target_idx = 0
+    # Determinar out_features (1 o totes)
     if args.out_all_vars:
         out_features = in_features
     else:
         out_features = 1
-    # Crear model
-    model = MeteoGraphSAGE(in_features=in_features, hidden_dim=args.hidden_dim, out_features=out_features,
-                           num_layers=args.graph_layers, use_lstm=args.use_lstm, use_gru=args.use_gru,
-                           use_transformer=args.use_transformer, use_attention=args.use_attention,
-                           num_attention_heads=4, dropout=0.2).to(device)
+    # Preparar embedding d'estacions: obtenir tots els IDs únics
+    all_station_ids = set()
+    for seq in sequences:
+        for data in seq:
+            if hasattr(data, 'ids'):
+                for sid in data.ids:
+                    all_station_ids.add(sid)
+    all_station_ids = sorted(list(all_station_ids))
+    id_to_idx = {sid: idx for idx, sid in enumerate(all_station_ids)}
+    num_stations = len(all_station_ids)
+    # Afegir índex d'estació a cada node de cada graf (per fer servir embedding)
+    if args.station_embedding_dim > 0:
+        for seq in sequences:
+            for data in seq:
+                if hasattr(data, 'ids'):
+                    data.station_idx = [id_to_idx[sid] for sid in data.ids]
+
+    # Inicialitzar model
+    model = MeteoGraphSAGEEnhanced(
+        in_features=in_features,
+        hidden_dim=args.hidden_dim,
+        out_features=out_features,
+        aggregator=args.aggregator,
+        temporal_model=args.temporal_model,
+        num_layers=args.graph_layers,
+        num_heads=args.num_attention_heads,
+        dropout=0.2,
+        station_embedding_dim=(args.station_embedding_dim if args.station_embedding_dim > 0 else 0),
+        num_stations=(num_stations if args.station_embedding_dim > 0 else None)
+    ).to(device)
+    model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
+    # Com que ja hem distribuït seq_dicts per rank, ara train_seq = seq_dicts[:train_end], etc.
+    total_seq = len(seq_dicts)
+    train_end = int(total_seq * 0.8)
+    val_end   = int(total_seq * 0.9)
+    train_seq = seq_dicts[:train_end]
+    val_seq   = seq_dicts[train_end:val_end] if val_end > train_end else []
+    test_seq  = seq_dicts[val_end:] if val_end < total_seq else []
+    logging.info(f"Seqüències: Train={len(train_seq)}, Val={len(val_seq)}, Test={len(test_seq)}")
+
+    # Només el procés 0 guarda gràfiques/logs globals
+    is_master = (rank == 0)
+    # ————————————————————————————————————————————————
+
     logging.info(f"Model MeteoGraphSAGE inicialitzat amb {sum(p.numel() for p in model.parameters())} paràmetres.")
-    # Entrenar model
-    model, train_hist, val_hist = train_model(model, train_sequences, val_sequences,
-                                             epochs=args.epochs, learning_rate=args.learning_rate, target_idx=target_idx)
-    # Avaluar model
-    metrics = evaluate_model(model, test_sequences, target_idx=target_idx)
-    logging.info(f"Mètriques finals en test: {metrics}")
-    # Guardar gràfiques d'evolució de la pèrdua
-    epochs_range = range(1, len(train_hist)+1)
+    # Entrenar el model
+    history = train_model(
+        model, train_seq, val_seq,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        target_idx=target_idx
+    )
+
+    train_loss = history['train_loss']
+    val_loss   = history.get('val_loss', [])
+
+    # Avaluació (només al master, o sincronitzar resultats)
+    if is_master:
+        # Extraiem només la llista de Data de cada seqüència
+        test_data = [sd['data'] for sd in test_seq]
+        metrics = evaluate_model(model, test_data, target_idx=target_idx)
+        logging.info(f"Mètriques finals en test: {metrics}")
+
+    # Guardar gràfica de l'evolució de la pèrdua
+    epochs_range = range(1, len(train_loss) + 1)
     plt.figure()
-    plt.plot(epochs_range, train_hist, label="Train Loss")
-    if val_sequences:
-        plt.plot(epochs_range, val_hist, label="Val Loss")
+    plt.plot(epochs_range, train_loss, label="Train Loss")
+    if val_loss:
+        plt.plot(epochs_range, val_loss, label="Val Loss")
     plt.xlabel("Època")
     plt.ylabel("MSE")
     plt.title("Evolució de la pèrdua durant l'entrenament")
     plt.legend()
     plt.savefig("loss_evolution.png")
-    # Opcional: visualització de prediccions vs reals per a una estació i variable
-    if test_sequences:
-        sample_seq = test_sequences[-1]  # última seqüència de test
+    # Visualització de prediccions vs reals per a una estació (de l'última seqüència de test, o de train si test no existeix)
+    if test_seq or train_seq:
+        if test_seq:
+            sample_seq = test_seq[-1]['data']
+        else:
+            sample_seq = train_seq[-1]['data']
         if len(sample_seq) > 1:
-            # Agafem una estació (el primer node per exemple, o la indicada per --predict_station si existeix en la seqüència)
             vis_station_idx = 0
-            vis_station_id = sample_seq[-1].ids[vis_station_idx] if hasattr(sample_seq[-1], "ids") else vis_station_idx
+            vis_station_id = sample_seq[-1].ids[vis_station_idx] if hasattr(sample_seq[-1], 'ids') else vis_station_idx
             true_series = [data.x[vis_station_idx, target_idx].item() for data in sample_seq]
             model.eval()
-            pred_series = []
-            # Predir pas a pas autoregressivament per visualitzar (utilitzem la funció predict_for_station per comoditat)
             pred_series = predict_for_station(model, sample_seq[:-1], vis_station_id, target_idx=target_idx, horizon=len(sample_seq)-1)
-            # Plot
             plt.figure()
             plt.plot(range(len(true_series)), true_series, label="Real")
-            plt.plot(range(len(true_series)), [None]+pred_series, label="Predicció", linestyle='--')
-            plt.xlabel("Pas horari")
+            plt.plot(range(len(true_series)), [None] + pred_series, label="Predicció", linestyle='--')
+            plt.xlabel("Pas temporal")
             plt.ylabel(args.target_variable)
             plt.title(f"Predicció vs Real - Estació {vis_station_id}")
             plt.legend()
             plt.savefig("prediction_vs_real.png")
-    # Si es demana una predicció per una estació concreta (diferent de la de dalt)
+    # Si s'ha indicat fer una predicció específica per una estació (diferent de la visualitzada anteriorment)
     if args.predict_station is not None:
-        # Seleccionem l'última seqüència de test si existeix, sinó de train
-        seq_for_pred = test_sequences[-1] if test_sequences else train_sequences[0]
+        seq_for_pred = test_seq[-1]['data'] if test_seq else train_seq[0]['data']
         preds_list = predict_for_station(model, seq_for_pred[:-1], args.predict_station, target_idx=target_idx, horizon=args.horizon)
         logging.info(f"Prediccions per a l'estació {args.predict_station} (variable {args.target_variable}): {preds_list}")
-    # Si es demana generar NetCDF regional
+    # Si s'ha demanat generar fitxer NetCDF regional
     if args.output_netcdf:
-        seq_for_map = test_sequences[-1] if test_sequences else train_sequences[-1]
+        seq_for_map = test_seq[-1]['data'] if test_seq else train_seq[-1]['data']
         predict_region_to_netcdf(model, seq_for_map, grid_res=0.1, target_idx=target_idx, file_path="prediccio_region.nc")
