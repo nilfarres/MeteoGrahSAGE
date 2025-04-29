@@ -23,9 +23,18 @@ import json
 import pandas as pd
 import numpy as np
 import calendar
+import logging
 from datetime import datetime
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+
+os.makedirs("logs", exist_ok=True)
+log_filename = os.path.join("logs", f"compute_PC_norm_params_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler(log_filename)]
+)
 
 ADD_WIND_COMPONENTS = True
 
@@ -33,7 +42,7 @@ ADD_WIND_COMPONENTS = True
 FEATURE_COLUMNS = [
     'Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
     'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos', 'dia_sin', 
-    'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp'
+    'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp', 'Vent_u', 'Vent_v'
 ]
 
 # Ruta d'entrada:
@@ -72,25 +81,30 @@ def add_cyclical_time_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def add_solar_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Afegeix una nova columna 'cos_sza' que conté el cosinus de l'angle solar zenital,
-    calculat a partir del Timestamp i la latitud de l'estació.
-    """
     if not np.issubdtype(df['Timestamp'].dtype, np.datetime64):
         df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     
     # Convertir latitud a radians
     lat_rad = np.deg2rad(df['lat'])
+    
+    # Obtenir el dia de l'any per cada fila
     day_of_year = df['Timestamp'].dt.dayofyear
-    # Declinació solar aproximada (en graus) i convertida a radians
+
+    # Calcular la declinació solar en graus i després convertir-la a radians
     dec_deg = 23.44 * np.sin(2 * np.pi * (284 + day_of_year) / 365)
     dec_rad = np.deg2rad(dec_deg)
-    # Hora local (suposem que Timestamp és hora local)
-    hour_local = df['Timestamp'].dt.hour + df['Timestamp'].dt.minute / 60.0
-    # Calcular HRA: (hora_local - 12)*15 graus, convertir a radians
-    HRA_rad = np.deg2rad((hour_local - 12) * 15)
     
+    # Calcular l'angle hora (HRA)
+    # Aquí, assumim que el Timestamp és en UTC, per la qual cosa ajustem afegint lon/15 per obtenir l'hora solar local.
+    # A més, s'aplica el mòdul 24 per mantenir l'hora dins del rang [0,24).
+    hour_local = (df['Timestamp'].dt.hour + df['Timestamp'].dt.minute / 60.0 + df['lon'] / 15.0) % 24
+    # HRA en graus: cada hora (fora del migdia) representa 15°
+    HRA_deg = (hour_local - 12) * 15
+    HRA_rad = np.deg2rad(HRA_deg)
+    
+    # Calcular cos(SZA)
     df['cos_sza'] = np.sin(lat_rad) * np.sin(dec_rad) + np.cos(lat_rad) * np.cos(dec_rad) * np.cos(HRA_rad)
+    
     return df
 
 def add_potential_temperature(df: pd.DataFrame, pressure_ref: float) -> pd.DataFrame:
@@ -121,12 +135,18 @@ def add_dew_point(df: pd.DataFrame) -> pd.DataFrame:
     df['DewPoint'] = dewpoint_c + 273.15
     return df
 
-def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.DataFrame:
+def encode_wind_direction(df: pd.DataFrame, add_components: bool = False) -> pd.DataFrame:
     """
     Converteix 'VentDir' a 'VentDir_sin' i 'VentDir_cos'.
+    Si s'especifica, afegeix les components zonal i meridional del vent.
     """
-    # Convertir la columna 'VentDir' a float (per tractar correctament tant strings com numbers)
-    df['VentDir'] = df['VentDir'].astype(float)
+    try:
+        # Convertir la columna 'VentDir' a float
+        df['VentDir'] = df['VentDir'].astype(float)
+        logging.debug("S'ha convertit la columna 'VentDir' a float correctament.")
+    except Exception as e:
+        logging.error(f"Error en convertir 'VentDir' a float: {e}")
+        raise
 
     if df['VentDir'].dtype == object:
         mapping = {
@@ -137,20 +157,34 @@ def encode_wind_direction(df: pd.DataFrame, add_components: bool=False) -> pd.Da
             'Calma': 0
         }
         df['VentDir'] = df['VentDir'].map(mapping)
-    df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
-    df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
-    
-    # Si es volen afegir components addicionals (no necessari per aquest càlcul)
-    if add_components:
-        # Convertir la direcció del vent en components meteorològics:
-        # u (zonal, positiu cap a l'est) = -VentFor * sin(θ)
-        # v (meridional, positiu cap al nord) = -VentFor * cos(θ)
-        df['Vent_u'] = - df['VentFor'] * np.sin(np.deg2rad(df['VentDir']))
-        df['Vent_v'] = - df['VentFor'] * np.cos(np.deg2rad(df['VentDir']))
+        logging.debug("S'ha aplicat el mapping de valors de 'VentDir'.")
 
-    # Eliminar la columna original
-    df.drop(columns=['VentDir'], inplace=True)
+    try:
+        df['VentDir_sin'] = np.sin(np.deg2rad(df['VentDir']))
+        df['VentDir_cos'] = np.cos(np.deg2rad(df['VentDir']))
+        logging.debug("S'han creat les columnes 'VentDir_sin' i 'VentDir_cos'.")
+    except Exception as e:
+        logging.error(f"Error en calcular 'VentDir_sin' o 'VentDir_cos': {e}")
+        raise
+
+    if add_components:
+        try:
+            df['Vent_u'] = - df['VentFor'] * np.sin(np.deg2rad(df['VentDir']))
+            df['Vent_v'] = - df['VentFor'] * np.cos(np.deg2rad(df['VentDir']))
+            logging.debug("S'han creat correctament les components 'Vent_u' i 'Vent_v'.")
+        except Exception as e:
+            logging.error(f"Error en calcular 'Vent_u' i 'Vent_v': {e}")
+            raise
+
+    try:
+        df.drop(columns=['VentDir'], inplace=True)
+        logging.debug("S'ha eliminat la columna original 'VentDir'.")
+    except Exception as e:
+        logging.error(f"Error en eliminar la columna 'VentDir': {e}")
+        raise
+
     return df
+
 
 def process_df_for_norm(df: pd.DataFrame) -> pd.DataFrame:
     """
