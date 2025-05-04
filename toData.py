@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-toData.py ― v2 (abril 2025)
+toData.py
 
 Converteix els CSV preprocessats (prep_GPU_parallel.py) a Data objects
 de torch_geometric amb:
@@ -14,7 +14,7 @@ de torch_geometric amb:
   • Pes exponencial distància (opc.)
   • Metadades de grau i radi efectiu + sanity check
 
-Autor original: Nil Farrés Soler · Modificat: 21-04-2025
+Autor: Nil Farrés Soler
 """
 
 # --------------------------------------------------------------------------- #
@@ -40,7 +40,7 @@ from scipy.spatial import Delaunay   # Backbone planari
 # Paràmetres per defecte                                                      #
 # --------------------------------------------------------------------------- #
 DEFAULT_INPUT_ROOT               = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
-DEFAULT_OUTPUT_ROOT              = "D:/DADES_METEO_PC_TO_DATA_v4"
+DEFAULT_OUTPUT_ROOT              = "D:/DADES_METEO_PC_TO_DATA"
 DEFAULT_MAX_WORKERS              = 8
 
 DEFAULT_K_NEIGHBORS              = 4     # k_base per al radi adaptatiu
@@ -73,7 +73,7 @@ GROUP_BY_PERIOD_CHOICES = ["none", "day", "month"]
 # --------------------------------------------------------------------------- #
 os.makedirs("logs", exist_ok=True)
 logfile = os.path.join("logs",
-                       f"toData_v4_{datetime.now():%Y%m%d_%H%M%S}.log")
+                       f"toData_{datetime.now():%Y%m%d_%H%M%S}.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -395,7 +395,7 @@ def sanity_check_node(data: Data, idx: int=0, k: int=5):
         logging.info(f" -> {n.item()} dist={d*DEFAULT_EDGE_DISTANCE_SCALE:.1f} km")
 
 # --------------------------------------------------------------------------- #
-# Processament d’un fitxer                                                    #
+# Processament d'un fitxer                                                    #
 # --------------------------------------------------------------------------- #
 def process_file(csv_path: str, input_root: str, output_root: str,
                  k_neighbors: int, radius_q: float, dist_scale: float,
