@@ -3,15 +3,15 @@
 compute_PC_norm_params.py
 
 Script per calcular els paràmetres de normalització dels Països Catalans (mitjana i desviació estàndard)
-per a les característiques dels nodes que es crearan a "toData_GPU_parallel.py" a partir dels fitxers CSV 
+per a les característiques dels nodes que es crearan a "toData.py" a partir dels fitxers CSV 
 preprocessats (sortida de "prep_GPU_parallel.py").
 
 Els fitxers d'entrada han de tenir les columnes:
   'id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon'
 
-Aquest fitxer cal executar-lo després de "prep_GPU_parallel.py" i abans de "toData_GPU_parallel.py".
+Aquest fitxer cal executar-lo després de "prep_GPU_parallel.py" i abans de "toData.py".
 
-Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a "toData_GPU_parallel.py"
+Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a "toData.py"
 per generar les columnes derivades: VentDir_sin, VentDir_cos, hora_sin, hora_cos, dia_sin, dia_cos, cos_sza, DewPoint i PotentialTemp.
 
 Els paràmetres dels Països Catalans es guardaran en un fitxer JSON anomenat "PC_norm_params.json".
@@ -38,7 +38,7 @@ logging.basicConfig(
 
 ADD_WIND_COMPONENTS = True
 
-# Definició de FEATURE_COLUMNS que s'utilitzaran a toData_GPU_parallel.py
+# Definició de FEATURE_COLUMNS que s'utilitzaran a toData.py
 FEATURE_COLUMNS = [
     'Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
     'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos', 'dia_sin', 
