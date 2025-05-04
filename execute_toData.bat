@@ -1,12 +1,11 @@
 @echo off
 REM ============================================================
-REM execute_toData_v4.bat
-REM Igual que l’anterior però suprimeix les arestes Península‑Balears.
+REM execute_toData.bat
 REM ============================================================
 
-python toData_v4.py ^
+python toData.py ^
   --input_root "D:\DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL" ^
-  --output_root "D:\DADES_METEO_PC_TO_DATA_v4" ^
+  --output_root "D:\DADES_METEO_PC_TO_DATA" ^
   --gpu_devices "cpu" ^
   --max_workers 6 ^
   --group_by_period "none" ^
