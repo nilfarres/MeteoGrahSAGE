@@ -395,7 +395,7 @@ def sanity_check_node(data: Data, idx: int=0, k: int=5):
         logging.info(f" -> {n.item()} dist={d*DEFAULT_EDGE_DISTANCE_SCALE:.1f} km")
 
 # --------------------------------------------------------------------------- #
-# Processament d'un fitxer                                                    #
+# Processament d’un fitxer                                                    #
 # --------------------------------------------------------------------------- #
 def process_file(csv_path: str, input_root: str, output_root: str,
                  k_neighbors: int, radius_q: float, dist_scale: float,
@@ -407,12 +407,51 @@ def process_file(csv_path: str, input_root: str, output_root: str,
 
     try:
         df = pd.read_csv(csv_path)
+        # 1.1. Eliminar files amb lat/lon/Alt faltants
+        missing = df[['lat','lon','Alt']].isna().any(axis=1).sum()
+        if missing > 0:
+            logging.warning(f"{csv_path}: descartant {missing} files amb NaN a lat/lon/Alt")
+            df = df.dropna(subset=['lat','lon','Alt'])
+
+        # 1.2. Eliminar duplicats per id
+        dup_count = df['id'].duplicated().sum()
+        if dup_count > 0:
+            logging.warning(f"{csv_path}: descartant {dup_count} files duplicats per id")
+            df = df.drop_duplicates(subset=['id'], keep='first')
+
+        # 1.3. Filtrar coordenades vàlides pels Països Catalans
+        MIN_LAT, MAX_LAT = 37.843, 42.85
+        MIN_LON, MAX_LON = -1.533, 4.324
+        mask = (
+            df['lat'].between(MIN_LAT, MAX_LAT) &
+            df['lon'].between(MIN_LON, MAX_LON)
+        )
+        invalid = (~mask).sum()
+        if invalid > 0:
+            logging.warning(
+                f"{csv_path}: descartant {invalid} estacions amb coordenades "
+                f"fora dels Països Catalans"
+            )
+            df = df[mask]
+
+        # 1.4. Eliminar estacions amb 0% d’humitat
+        # Ens assegurem que 'Humitat' és numèrica
+        df['Humitat'] = pd.to_numeric(df['Humitat'], errors='coerce')
+        zero_hum = (df['Humitat'] == 0).sum()
+        if zero_hum > 0:
+            logging.warning(f"{csv_path}: descartant {zero_hum} estacions amb 0% d'humitat")
+            df = df[df['Humitat'] != 0]        
+
         df['VentFor'] = pd.to_numeric(df['VentFor'], errors='coerce').fillna(0)/3.6
         if 'Timestamp' not in df.columns:
             df.insert(0, 'Timestamp', extract_timestamp_from_filename(csv_path))
+        
+        # Assegura dtype datetime per a tots dos casos
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+
         if not set(REQUIRED_COLUMNS).issubset(df.columns):
             logging.error(f"{csv_path} incomplet.")
-            return None
+            return False
 
         device = torch.device(gpu)
         x, nparams = create_node_features(df, excl_temp_norm, add_wind_comp,
@@ -421,8 +460,8 @@ def process_file(csv_path: str, input_root: str, output_root: str,
         x   = x.to(device)
 
         if x.size(0) < 2:
-            logging.warning(f"{csv_path} només té 1 node, s'omet.")
-            return None
+            logging.warning(f"{csv_path}: només {df.shape[0]} files després de descartar NaN, s'omet.")
+            return False
 
         edge_idx, edge_attr = create_edge_index_and_attr(
             pos, x, k_neighbors, radius_q, dist_scale,
@@ -439,21 +478,31 @@ def process_file(csv_path: str, input_root: str, output_root: str,
         data.meta        = compute_graph_metadata(data)
         sanity_check_node(data, 0, 3)
 
-        # Path de sortida
-        rel = os.path.relpath(csv_path, input_root).replace("dadesPC_utc.csv","pt")
-        out = os.path.join(output_root, rel)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
+        # ← sortida nova: directament a OUTPUT_ROOT amb nom YYYYMMDDHHpt
+        base = os.path.basename(csv_path)
+        name = base.replace('dadesPC_utc.csv', '.pt')
+        os.makedirs(output_root, exist_ok=True)
+        out = os.path.join(output_root, name)
+
         torch.save(data, out)
         logging.info(f"{csv_path} -> {out}")
         return True
-    except Exception as e:
-        logging.error(f"{csv_path} ERR -> {e}")
+    except Exception:
+        logging.exception(f"{csv_path} - error durant el processament")
         return False
 
 # --------------------------------------------------------------------------- #
 # Batch processing                                                            #
 # --------------------------------------------------------------------------- #
 def assign_gpu(idx:int, gpus:list)->str: return gpus[idx%len(gpus)]
+
+def _ts(fp):
+    """
+    Retorna un objecte datetime a partir del prefix 'YYYYMMDDHH' del nom de fitxer.
+    """
+    base = os.path.basename(fp)
+    ts = base[:10]  # ex. '2025042100'
+    return datetime.strptime(ts, '%Y%m%d%H')
 
 def process_all_files(input_root, output_root, max_workers,
                       k_neighbors, radius_q, dist_scale, metric_pos,
@@ -462,25 +511,39 @@ def process_all_files(input_root, output_root, max_workers,
                       log_pluja, add_wind_comp, include_year,
                       group_by, make_seq, coverage, norm_params):
 
-    files = [os.path.join(r,f) for r,_,fs in os.walk(input_root)
+    # 1) Recollim tots els CSV
+    files = [os.path.join(r, f)
+             for r, _, fs in os.walk(input_root)
              for f in fs if f.endswith("dadesPC_utc.csv")]
+
+    # 2) Filtre per any
     files = [f for f in files
              if int(re.match(r'(\d{4})', os.path.basename(f)).group(1))
              in PROCESSED_YEARS]
+
+    # 3) Ordenem cronològicament segons el prefix YYYYMMDDHH
+    files.sort(key=_ts)
+
     logging.info(f"{len(files)} fitxers a processar")
 
     ok, ko = 0, 0
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        fut = {ex.submit(process_file, fp, input_root, output_root,
-                         k_neighbors, radius_q, dist_scale, metric_pos,
-                         excl_temp_norm, assign_gpu(i,gpus), add_multiscale,
-                         ms_q, max_alt_km, add_weight, decay_len, p_ref,
-                         log_pluja, add_wind_comp, include_year,
-                         norm_params): fp
-               for i,fp in enumerate(files)}
+        fut = {
+            ex.submit(process_file, fp, input_root, output_root,
+                      k_neighbors, radius_q, dist_scale, metric_pos,
+                      excl_temp_norm, assign_gpu(i, gpus), add_multiscale,
+                      ms_q, max_alt_km, add_weight, decay_len, p_ref,
+                      log_pluja, add_wind_comp, include_year,
+                      norm_params): fp
+            for i, fp in enumerate(files)
+        }
+
         for r in tqdm(as_completed(fut), total=len(fut), unit="fitxer"):
-            ok += r.result() is True
-            ko += r.result() is False
+            if r.result() is True:
+                ok += 1
+            else:
+                ko += 1
+
     logging.info(f"Fi: {ok} OK · {ko} KO")
 
 # --------------------------------------------------------------------------- #
