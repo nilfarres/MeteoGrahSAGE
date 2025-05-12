@@ -3,7 +3,7 @@
 """
 toData.py
 
-Converteix els CSV preprocessats (prep_GPU_parallel.py) a Data objects
+Converteix els CSV preprocessats (prep.py) a Data objects
 de torch_geometric amb:
   • Radi adaptatiu local (r_i = scale·d_k)        ➜ menys arestes innecessàries
   • Backbone Delaunay 2-D planari (lon·cos lat)   ➜ veïns naturals
@@ -14,7 +14,7 @@ de torch_geometric amb:
   • Pes exponencial distància (opc.)
   • Metadades de grau i radi efectiu + sanity check
 
-Autor: Nil Farrés Soler
+Autor original: Nil Farrés Soler · Modificat: 03-05-2025
 """
 
 # --------------------------------------------------------------------------- #
@@ -59,7 +59,7 @@ REQUIRED_COLUMNS = ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt',
 
 FEATURE_COLUMNS = ['Temp', 'Humitat', 'Pluja', 'VentFor', 'Patm', 'Alt_norm',
                    'VentDir_sin', 'VentDir_cos', 'hora_sin', 'hora_cos',
-                   'dia_sin', 'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp']
+                   'dia_sin', 'dia_cos', 'cos_sza', 'DewPoint', 'PotentialTemp', 'Vent_u', 'Vent_v']
 
 TEMPORAL_FEATURES = ['hora_sin', 'hora_cos', 'dia_sin', 'dia_cos', 'cos_sza']
 
@@ -115,10 +115,9 @@ def add_solar_features(df: pd.DataFrame) -> pd.DataFrame:
                      + np.cos(lat_rad)*np.cos(dec_rad)*np.cos(hra_rad))
     return df
 
-# -------------- Variables derivades ---------------------------------------- #
 def add_potential_temperature(df: pd.DataFrame, p0: float=DEFAULT_PRESSURE_REF):
-    df['PotentialTemp'] = (df['Temp'] *
-                           (p0/df['Patm'])**0.286)
+    p = df['Patm_orig']
+    df['PotentialTemp'] = df['Temp'] * (p0 / p)**0.286
     return df
 
 def add_dew_point(df: pd.DataFrame):
@@ -360,6 +359,7 @@ def create_node_features(df: pd.DataFrame, excl_temp_norm: bool,
     if log_pluja:
         df['Pluja'] = np.log1p(np.maximum(
             pd.to_numeric(df['Pluja'], errors='coerce').fillna(0), 0))
+    df['Patm_orig'] = df['Patm']
     df['Patm']   -= p_ref
 
     # DewPoint & PotentialTemp
@@ -476,6 +476,9 @@ def process_file(csv_path: str, input_root: str, output_root: str,
         if include_year: data.year = int(df['Timestamp'].dt.year.iloc[0])
         data.norm_params = nparams
         data.meta        = compute_graph_metadata(data)
+
+        # Afegim l’etiqueta 'y' amb TOTES les variables a predir
+        data.y = data.x.clone()
         sanity_check_node(data, 0, 3)
 
         # ← sortida nova: directament a OUTPUT_ROOT amb nom YYYYMMDDHHpt
