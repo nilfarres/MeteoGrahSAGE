@@ -29,16 +29,16 @@ def parse_args():
         description="Genera seqüències temporals diàries de grafs dinàmics."
     )
     parser.add_argument(
-        '--input_dir', type=str, default='D:\DADES_METEO_PC_TO_DATA_v7_correcte',
-        help='Directori amb snapshots horaris (*.pt) generats per toData_v7.py'
+        '--input_dir', type=str, default='D:\DADES_METEO_PC_TO_DATA',
+        help='Directori amb snapshots horaris (*.pt) generats per toData.py'
     )
     parser.add_argument(
-        '--output_dir', type=str, default='D:\DADES_METEO_PC_generated_seqs_v6_ws168_str6_hh168',
+        '--output_dir', type=str, default='D:\DADES_METEO_PC_generated_seqs_ws168_str6_hh168',
         help='Directori on desar les seqüències generades'
     )
     parser.add_argument(
         '--window_size', type=int, default=168,
-        help="Nombre d'hores per seqüència (per defecte: 48)"
+        help="Nombre d'hores per seqüència (per defecte: 168)"
     )
     parser.add_argument(
         '--stride', type=int, default=6,
