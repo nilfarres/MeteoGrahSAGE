@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --mem=29G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -35,18 +35,18 @@ mkdir -p $SLURM_SUBMIT_DIR/logs
 # ───────────────────────────────────────────────────────────────────────────── #
 #  Paràmetres de l’entrenament                                                  #
 # ───────────────────────────────────────────────────────────────────────────── #
-SEQ_DIR="/fhome/nfarres/DADES_METEO_PC_generated_seqs_ws168_str6_hh168"
+SEQ_DIR="/fhome/nfarres/DADES_METEO_PC_generated_seqs_v8_ws48_str6_hh6"
 BATCH_SIZE=4
-EPOCHS=20
+EPOCHS=100
 LR=1e-3
 HIDDEN_DIM=256
-PATIENCE=15
+PATIENCE=20
 MIN_DELTA=1e-4
 DEVICE="cuda"
 GRAD_CLIP=5.0
 STD_EPS=1e-6
-DL_NUM_WORKERS=6
-MODEL="dyngcn"
+DL_NUM_WORKERS=4
+MODEL="dyntgcn"
 
 # ───────────────────────────────────────────────────────────────────────────── #
 #  Llançament de l’script Python                                                #
@@ -60,11 +60,16 @@ srun python MeteoGraphPC.py \
   --lr           $LR \
   --hidden_dim   $HIDDEN_DIM \
   --model        $MODEL \
+  --input_indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+  --target_indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+  --use_edge_attr \
+  --use_mask \
   --dl_num_workers $DL_NUM_WORKERS \
   --patience     $PATIENCE \
   --min_delta    $MIN_DELTA \
   --device       $DEVICE \
   --grad_clip    $GRAD_CLIP \
-  --std_eps      $STD_EPS
+  --std_eps      $STD_EPS \
+  --save_dir     checkpoints_ws48_str6_hh6_dyntgcn
 
 echo "=== Fi entrenament:   $(date '+%Y-%m-%d %H:%M:%S') ==="
