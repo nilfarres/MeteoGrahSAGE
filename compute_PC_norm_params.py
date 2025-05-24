@@ -4,12 +4,12 @@ compute_PC_norm_params.py
 
 Script per calcular els paràmetres de normalització dels Països Catalans (mitjana i desviació estàndard)
 per a les característiques dels nodes que es crearan a "toData.py" a partir dels fitxers CSV 
-preprocessats (sortida de "prep_GPU_parallel.py").
+preprocessats (sortida de "prep.py").
 
 Els fitxers d'entrada han de tenir les columnes:
   'id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon'
 
-Aquest fitxer cal executar-lo després de "prep_GPU_parallel.py" i abans de "toData.py".
+Aquest fitxer cal executar-lo després de "prep.py" i abans de "toData.py".
 
 Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a "toData.py"
 per generar les columnes derivades: VentDir_sin, VentDir_cos, hora_sin, hora_cos, dia_sin, dia_cos, cos_sza, DewPoint i PotentialTemp.
@@ -46,7 +46,7 @@ FEATURE_COLUMNS = [
 ]
 
 # Ruta d'entrada:
-input_root = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
+input_root = "D:/DADES_METEO_PC_PREPROCESSADES"
 # Ruta de sortida per als paràmetres dels Països Catalans
 output_norm_params = "PC_norm_params.json"
 
@@ -112,8 +112,6 @@ def add_potential_temperature(df: pd.DataFrame, pressure_ref: float) -> pd.DataF
     Calcula la temperatura potencial en Kelvin utilitzant Temp ja convertida a Kelvin.
     La fórmula és: θ = T * (P₀ / P)^(R/cₚ), amb R/cₚ ≈ 0.286.
     """
-    # Suposem que df['Patm'] encara conté la pressió mesurada (sense la referència restada)
-    # i Temp ja és en Kelvin
     df['PotentialTemp'] = df['Temp'] * (pressure_ref / df['Patm'])**0.286
     return df
 
