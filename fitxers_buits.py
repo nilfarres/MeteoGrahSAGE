@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-fitxers_buits.py
 ==============================================================================
+fitxers_buits.py
+
 Script per detectar fitxers CSV buits i no llegibles dins l'estructura de carpetes de DADES_METEO_PC.
 
 Aquest script recorre recursivament el directori arrel i localitza tots els fitxers
@@ -12,16 +13,16 @@ Per a cada fitxer, comprova si està totalment buit o si no es pot llegir correc
 Els resultats (fitxers buits i no llegibles) es guarden en un fitxer de text 
 dins el directori de sortida especificat.
 
-Ús:
+INSTRUCCIONS D'ÚS:
   1. Edita les rutes "root_directory" (directori d'origen) i "output_directory" (on es guardarà el resultat) al final del codi.
   2. Executa l'script. El procés pot trigar depenent de la quantitat de fitxers.
   3. Consulta el fitxer de resultats generat per veure la llista de fitxers buits i no llegibles.
 
-Requisits:
+REQUISITS:
   - Python 3.x
   - Llibreries: pandas, tqdm
 
-Autor: Nil Farrés Soler
+AUTOR: Nil Farrés Soler
 ==============================================================================
 """
 
