@@ -2,19 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 toData.py
-
-Converteix els CSV preprocessats (prep.py) a Data objects
-de torch_geometric amb:
-  • Radi adaptatiu local (r_i = scale·d_k)        ➜ menys arestes innecessàries
-  • Backbone Delaunay 2-D planari (lon·cos lat)   ➜ veïns naturals
-  • Filtre d'altitud en metres reals              ➜ evita ponts entre vessants
-  • Atributs de pendent/orientació a edge_attr
-  • connectivitat limitada (≤120 km i ∆z ≤ max)
-  • coalesce + remove_self_loops
-  • Pes exponencial distància (opc.)
-  • Metadades de grau i radi efectiu + sanity check
-
-Autor original: Nil Farrés Soler · Modificat: 03-05-2025
 """
 
 # --------------------------------------------------------------------------- #
@@ -39,7 +26,7 @@ from scipy.spatial import Delaunay   # Backbone planari
 # --------------------------------------------------------------------------- #
 # Paràmetres per defecte                                                      #
 # --------------------------------------------------------------------------- #
-DEFAULT_INPUT_ROOT               = "D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL"
+DEFAULT_INPUT_ROOT               = "D:/DADES_METEO_PC_PREPROCESSADES"
 DEFAULT_OUTPUT_ROOT              = "D:/DADES_METEO_PC_TO_DATA"
 DEFAULT_MAX_WORKERS              = 8
 
