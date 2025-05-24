@@ -5,8 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --gres=gpu:1
-#SBATCH --mem=29G
-#SBATCH --time=2-00:00:00
+#SBATCH --mem=59G
+#SBATCH --time=7-00:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -35,18 +35,26 @@ mkdir -p $SLURM_SUBMIT_DIR/logs
 # ───────────────────────────────────────────────────────────────────────────── #
 #  Paràmetres de l’entrenament                                                  #
 # ───────────────────────────────────────────────────────────────────────────── #
-SEQ_DIR="/fhome/nfarres/DADES_METEO_PC_generated_seqs_v8_ws48_str6_hh6"
+SEQ_DIR="/fhome/nfarres/All_Sequences_v8_ws48_str12_hh6_chunksde100"
 BATCH_SIZE=4
-EPOCHS=100
+EPOCHS=30
 LR=1e-3
-HIDDEN_DIM=256
-PATIENCE=20
+LR_SCHEDULER="onecycle"
+HIDDEN_DIM=128
+PATIENCE=5
 MIN_DELTA=1e-4
 DEVICE="cuda"
-GRAD_CLIP=5.0
+GRAD_CLIP=1.0
 STD_EPS=1e-6
-DL_NUM_WORKERS=4
-MODEL="dyntgcn"
+DL_NUM_WORKERS=1
+MODEL="MeteoGraphPC_v1"
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+# Modificar en funció de les seqüències generades amb generate_seq.py
+WS=48 # Mida finestra (window size)
+STR=6 # Passos entre finestres (stride)
+HH=6  # Horitzo de prediccio (horizon)
+
 
 # ───────────────────────────────────────────────────────────────────────────── #
 #  Llançament de l’script Python                                                #
@@ -58,6 +66,7 @@ srun python MeteoGraphPC.py \
   --batch_size   $BATCH_SIZE \
   --epochs       $EPOCHS \
   --lr           $LR \
+  --lr_scheduler $LR_SCHEDULER \
   --hidden_dim   $HIDDEN_DIM \
   --model        $MODEL \
   --input_indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
@@ -70,6 +79,8 @@ srun python MeteoGraphPC.py \
   --device       $DEVICE \
   --grad_clip    $GRAD_CLIP \
   --std_eps      $STD_EPS \
-  --save_dir     checkpoints_ws48_str6_hh6_dyntgcn
+  --save_dir     ${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP} \
+  --log_csv      ${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}/train_${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}.csv \
+  --norm_json    PC_norm_params.json
 
 echo "=== Fi entrenament:   $(date '+%Y-%m-%d %H:%M:%S') ==="
