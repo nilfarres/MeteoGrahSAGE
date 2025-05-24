@@ -1,3 +1,30 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+sense_nomcol.py
+==============================================================================
+Script per detectar fitxers CSV sense la capçalera correcta a la primera línia, dins del directori DADES_METEO_PC.
+
+Aquest script recorre recursivament el directori arrel i localitza tots els fitxers
+que acaben amb "dadesPC_utc.csv", excepte dins dels directoris exclosos.
+Per a cada fitxer, comprova si la primera línia coincideix exactament amb la capçalera
+estàndard coneguda. Informa de tots els fitxers que no tenen aquesta capçalera a la
+primera línia, i desa el resultat en un fitxer de text al directori de sortida.
+
+Ús:
+  1. Edita les rutes "root_directory" (directori d'origen) i "output_directory" (on es guardarà el resultat) al final del codi.
+  2. Executa l'script. El procés pot trigar depenent de la quantitat de fitxers.
+  3. Consulta el fitxer de resultats generat per veure la llista de fitxers sense capçalera correcta.
+
+Requisits:
+  - Python 3.x
+  - Llibreries: tqdm
+
+Autor: Nil Farrés Soler
+==============================================================================
+"""
+
 import os
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
