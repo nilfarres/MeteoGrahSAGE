@@ -346,7 +346,7 @@ def process_all_csvs_parallel(root_directory: str, processed_directory: str, max
 
 if __name__ == "__main__":
     root_directory = 'D:/DADES_METEO_PC'
-    processed_directory = 'D:/DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL'
+    processed_directory = 'D:/DADES_METEO_PC_PREPROCESSADES'
     process_all_csvs_parallel(root_directory, processed_directory, max_workers=8)
     logging.info("Processament finalitzat.")
     print("Processament finalitzat.")
