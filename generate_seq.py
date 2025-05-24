@@ -191,7 +191,7 @@ def main():
     logging.info(f"ID union global: {N_u_global} nodes")
 
     # Seqüències
-    starts = list(range(0, total - args.window_size + 1, args.stride))
+    starts = list(range(0, total - args.window_size - HORIZON_HOURS + 1, args.stride))
     logging.info(f"Generant {len(starts)} seqüències (window={args.window_size}, stride={args.stride}), horizon={HORIZON_HOURS}h")
     with ProcessPoolExecutor(max_workers=args.num_workers,
                              initializer=_init_globals,
