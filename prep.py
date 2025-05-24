@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-prep.py
 ==============================================================================
+prep.py
+
 Script per a l'extracció i el preprocessament massiu de fitxers CSV meteorològics.
 
 Aquest script recorre recursivament el directori DADES_METEO_PC, que conté dades meteorològiques 
