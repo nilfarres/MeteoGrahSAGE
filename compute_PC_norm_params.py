@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
+==============================================================================
 compute_PC_norm_params.py
 
-Script per calcular els paràmetres de normalització dels Països Catalans (mitjana i desviació estàndard)
-per a les característiques dels nodes que es crearan a "toData.py" a partir dels fitxers CSV 
-preprocessats (sortida de "prep.py").
+Script per calcular els paràmetres de normalització globals dels Països Catalans
+(mitjana i desviació estàndard) a partir dels fitxers CSV meteorològics preprocessats amb "prep.py".
 
-Els fitxers d'entrada han de tenir les columnes:
-  'id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt', 'VentDir', 'VentFor', 'Patm', 'lat', 'lon'
+FUNCIONALITATS PRINCIPALS:
+  - Llegeix tots els fitxers CSV de dades meteorològiques preprocessades (sortida de "prep.py").
+  - Aplica el mateix processament que "toData.py" per generar totes les columnes derivades necessàries:
+      VentDir_sin, VentDir_cos, hora_sin, hora_cos, dia_sin, dia_cos, cos_sza, DewPoint, PotentialTemp, Vent_u, Vent_v.
+  - Calcula la mitjana i la desviació estàndard de cada feature definida a FEATURE_COLUMNS.
+  - Desa aquests paràmetres globals en un fitxer JSON anomenat "PC_norm_params.json".
+  - Genera i desa un histograma per a cada feature al directori "histogrames" (en format PNG).
 
-Aquest fitxer cal executar-lo després de "prep.py" i abans de "toData.py".
+INSTRUCCIONS D'ÚS:
+  1. Important: cal haver executat primer l'script "prep.py" per obtenir els fitxers preprocessats.
+  2. Assegura't que la variable "input_root" apunta al directori amb els fitxers preprocessats.
+  3. Executa aquest script. El procés pot trigar depenent del volum de dades.
+  4. Trobaràs el fitxer "PC_norm_params.json" amb les estadístiques globals i, opcionalment, els histogrames de cada variable al directori "histogrames".
 
-Abans de calcular les estadístiques, s'apliquen les mateixes funcions que s'utilitzen a "toData.py"
-per generar les columnes derivades: VentDir_sin, VentDir_cos, hora_sin, hora_cos, dia_sin, dia_cos, cos_sza, DewPoint i PotentialTemp.
+REQUISITS:
+  - Python 3.x
+  - Llibreries: pandas, numpy, matplotlib, tqdm
 
-Els paràmetres dels Països Catalans es guardaran en un fitxer JSON anomenat "PC_norm_params.json".
+AUTOR: Nil Farrés Soler
+==============================================================================
 """
 
 import os
