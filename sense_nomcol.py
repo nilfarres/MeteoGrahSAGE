@@ -12,16 +12,16 @@ Per a cada fitxer, comprova si la primera línia coincideix exactament amb la ca
 estàndard coneguda. Informa de tots els fitxers que no tenen aquesta capçalera a la
 primera línia, i desa el resultat en un fitxer de text al directori de sortida.
 
-Ús:
+INSTRUCCIONS D'ÚS:
   1. Edita les rutes "root_directory" (directori d'origen) i "output_directory" (on es guardarà el resultat) al final del codi.
   2. Executa l'script. El procés pot trigar depenent de la quantitat de fitxers.
   3. Consulta el fitxer de resultats generat per veure la llista de fitxers sense capçalera correcta.
 
-Requisits:
+REQUISITS:
   - Python 3.x
   - Llibreries: tqdm
 
-Autor: Nil Farrés Soler
+AUTOR: Nil Farrés Soler
 ==============================================================================
 """
 
