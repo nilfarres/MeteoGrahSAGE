@@ -36,7 +36,6 @@ AUTOR: Nil Farrés Soler
 ==============================================================================
 """
 
-
 import os
 import re
 import pandas as pd
