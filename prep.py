@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-Script per a l'extracció i el preprocessament dels fitxers CSV amb dades meteorològiques.
+prep.py
+==============================================================================
+Script per a l'extracció i el preprocessament massiu de fitxers CSV meteorològics.
 
-Aquest codi:
-  - Llegeix els fitxers originals sense modificar-los (fes servir 'utf-8' i, si falla, 'latin-1').
-  - Extreu la data i l'hora del nom del fitxer per generar la columna 'Timestamp'
-    (format: "YYYY-MM-DD HH:00:00"); si l'hora extreta és ≥ 24, s'omet el fitxer.
-  - Filtra les dades per mantenir només les fonts oficials (segons la llista FONTS_OFICIALS).
-  - Selecciona les columnes d'interès:
-       * Per als fitxers dels anys 2016-2024: ['id', 'Font', 'Temp', 'Humitat', 'Pluja', 'Alt',
-         'VentDir', 'VentFor', 'Patm', 'lat', 'lon']
-       * Per als fitxers de l'any 2015 (que poden no tenir 'Patm'): ['id', 'Font', 'Temp', 'Humitat',
-         'Pluja', 'Alt', 'VentDir', 'VentFor', 'lat', 'lon']
-  - Converteix les columnes numèriques.
-  - Processa la variable "Pluja": calcula la pluja real per hora com la diferència
-    entre el valor acumulat actual i el del fitxer de l'hora anterior (si és la primera hora, es considera 0).
-  - Imputa els valors nuls de les variables 'Temp', 'Humitat', 'VentDir', 'VentFor' i 'Patm' (si existeix)
-    fent interpolació amb dades vàlides dels fitxers adjacents:
-      • Es cerca primer dins d'un marge de 8 hores (per hores immediates anterior i posterior);
-      • Si no es troben, es comprova la mateixa hora del dia anterior (o posterior).
-      • Si encara no es troben dades vàlides, el valor quedarà com a NaN.
-  - Abans de desar el fitxer processat, s'eliminen les estacions (files) que contenen algun NaN
-    en alguna variable requerida.
-  - Ajusta els intervals de 'Humitat' (0-100%), 'VentFor' (0-200km/h) i 'VentDir' (0-360º).
-  - Desa els fitxers processats en un directori separat, mantenint l'estructura original.
-  - Mostra una barra de progrés per saber quants fitxers s'han processat.
+Aquest script recorre recursivament el directori DADES_METEO_PC, que conté dades meteorològiques 
+emmagatzemades en fitxers csv horàris des de 2016 i fins a 2024 (acabats en "dadesPC_utc.csv"). 
+Genera una versió preprocessada i neta dels fitxers, aplicant diversos filtres i transformacions.
 
-Les dades originals, en fitxers amb format csv, romanen intactes. 
-Les dades preprocessades es guarden en un nou directori amb la mateixa estructura de carpetes.
+FUNCIONALITATS PRINCIPALS:
+  - Llegeix els fitxers originals sense modificar-los, utilitzant "utf-8" o "latin-1".
+  - Extreu la data i hora del nom del fitxer i la transforma en una nova columna "Timestamp".
+  - Filtra per fonts oficials d’estacions (segons la llista FONTS_OFICIALS).
+  - Selecciona només les columnes d’interès (i s'adapta segons l’any).
+  - Calcula la pluja real per hora a partir dels valors acumulats.
+  - Imputa valors nuls de variables meteorològiques mitjançant interpolació (hores adjacents o dies anteriors/posteriors).
+  - Elimina estacions amb valors crítics nuls després de la imputació.
+  - Ajusta els intervals de diverses variables (Humitat, VentFor, VentDir).
+  - Desa els fitxers processats en un directori de sortida, replicant l'estructura d'origen.
+  - Permet el processament en paral·lel (amb ProcessPoolExecutor i càlculs numèrics optimitzats amb Cupy).
+  - Mostra barra de progrés i guarda els logs d'errors i del procés.
 
-A més, aquest codi fa ús de diverses millores per tal d'accelerar l'execució mitjançant una GPU:
-  - Processament paral·lel de fitxers amb ProcessPoolExecutor.
-  - Ús de Cupy per a càlculs numèrics crítics (interpolació i càlcul de la pluja).
-  - Manteniment de la lògica original: lectura, filtratge, extracció de Timestamp, conversió,
-    interpolació, ajust de valors i desada dels fitxers processats.
+INSTRUCCIONS D'ÚS:
+  1. Edita les rutes "root_directory" (origen) i "processed_directory" (destí) al final del codi.
+  2. Executa l'script. El procés pot trigar depenent de la quantitat de fitxers i la potència de la màquina.
+  3. Consulta el directori de sortida i els fitxers de log generats per verificar el resultat.
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: pandas, numpy, cupy, tqdm, logging
+
+AUTOR: Nil Farrés Soler
+==============================================================================
 """
+
 
 import os
 import re
