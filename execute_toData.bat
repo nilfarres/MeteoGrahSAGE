@@ -3,8 +3,8 @@ REM ============================================================
 REM execute_toData.bat
 REM ============================================================
 
-python toData_v5.py ^
-  --input_root "D:\DADES_METEO_PC_PREPROCESSADES_GPU_PARALLEL" ^
+python toData_v7.py ^
+  --input_root "D:\DADES_METEO_PC_PREPROCESSADES" ^
   --output_root "D:\DADES_METEO_PC_TO_DATA" ^
   --gpu_devices "cpu" ^
   --max_workers 6 ^
