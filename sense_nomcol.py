@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-sense_nomcol.py
 ==============================================================================
+sense_nomcol.py
+
 Script per detectar fitxers CSV sense la capçalera correcta a la primera línia, dins del directori DADES_METEO_PC.
 
 Aquest script recorre recursivament el directori arrel i localitza tots els fitxers
