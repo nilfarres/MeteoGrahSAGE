@@ -20,9 +20,10 @@ FUNCIONALITATS:
   - Desa cada gràfic com a imatge PNG dins una carpeta amb el nom del fitxer.
 
 INSTRUCCIONS D'ÚS:
-  1. Modifica la variable "file_path" per posar-hi el nom del fitxer que vols visualitzar.
-  2. Executa l'script. Es crearà una carpeta amb les imatges generades.
-  3. Trobaràs les visualitzacions (en format PNG) dins la carpeta "visualitzacio_[nom_fitxer]".
+  1. Important: cal haver executat primer l'script "prep.py".
+  2. Modifica la variable "file_path" per posar-hi el nom del fitxer que vols visualitzar.
+  3. Executa l'script. Es crearà una carpeta amb les imatges generades.
+  4. Trobaràs les visualitzacions (en format PNG) dins la carpeta "visualitzacio_[nom_fitxer]".
 
 REQUISITS:
   - Python 3.x
