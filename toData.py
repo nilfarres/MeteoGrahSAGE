@@ -21,11 +21,12 @@ FUNCIONALITATS PRINCIPALS:
 
 INSTRUCCIONS D'ÚS:
   1. Important: cal haver executat prèviament els codis "prep.py" i "compute_PC_norm_params.py" en aquest ordre.
-  2. Passa com a argument el camí al fitxer JSON (PC_norm_params.json) amb els paràmetres globals de normalització (--PC_norm_params) generat per "compute_PC_norm_params.py".
-  3. Edita o especifica les rutes d'entrada i sortida si cal (--input_root, --output_root).
-  4. Tria els paràmetres de processament segons la teva necessitat (nombre de veïns, normalització, GPU, etc.).
-  5. Executa l'script via terminal o directament amb els paràmetres necessaris.
-  6. Els fitxers ".pt" resultants es podran utilitzar com a entrada per a models PyTorch Geometric.
+  2. Aquest script es pot executar amb el fitxer "execute_toData.bat".
+  3. Passa com a argument el camí al fitxer JSON (PC_norm_params.json) amb els paràmetres globals de normalització (--PC_norm_params) generat per "compute_PC_norm_params.py".
+  4. Edita o especifica les rutes d'entrada i sortida si cal (--input_root, --output_root).
+  5. Tria els paràmetres de processament segons la teva necessitat (nombre de veïns, normalització, GPU, etc.).
+  6. Executa l'script via terminal o directament amb els paràmetres necessaris.
+  7. Els fitxers ".pt" resultants es podran utilitzar com a entrada per a models PyTorch Geometric.
 
 REQUISITS:
   - Python 3.x
