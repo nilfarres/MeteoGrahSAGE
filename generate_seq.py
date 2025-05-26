@@ -27,7 +27,7 @@ INSTRUCCIONS D'ÚS:
       --window_size  (llargada de la seqüència, en hores).
       --stride       (interval entre seqüències, en hores).
       --num_workers  (processos en paral·lel, opcional).
-  3. Modifica el valor de la variable HORIZON_HOURS a l'inici de l'script per definir l'horitzó de predicció de cada seqüència (per defecte 6 hores).
+  3. Modifica el valor de la variable "HORIZON_HOURS" a l'inici de l'script per definir l'horitzó de predicció de cada seqüència (per defecte 6 hores).
   3. Executa l'script i trobaràs les seqüències generades a la carpeta de sortida.
 
 REQUISITS:
