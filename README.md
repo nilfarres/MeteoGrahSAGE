@@ -14,15 +14,6 @@ A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de
 - [Estructura del repositori](#estructura-del-repositori)
 - [Requisits](#requisits)
 - [Ordre d'execució i explicació de cada script](#ordre-dexecució-i-explicació-de-cada-script)
-    - [1. fitxers_buits.py](#1-fitxers_buitspy)
-    - [2. sense_nomcol.py](#2-sense_nomcolpy)
-    - [3. prep.py](#3-preppy)
-    - [4. visualitzador_dades_prep.py](#4-visualitzador_dades_preppy)
-    - [5. compute_PC_norm_params.py](#5-compute_pc_norm_paramspy)
-    - [6. toData.py](#6-todatapy)
-    - [7. generate_seq.py](#7-generate_seqpy)
-    - [8. all_sequences.py](#8-all_sequencespy)
-    - [9. MeteoGraphPC.py](#9-meteographpcpy)
 - [Com utilitzar les dades d'exemple](#com-utilitzar-les-dades-dexemple)
 - [Notes addicionals i recomanacions](#notes-adicionals-i-recomanacions)
 - [Autor i contacte](#autor-i-contacte)
@@ -46,6 +37,7 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 
 ## Estructura del repositori
 
+```text
 .
 ├── DADES_METEO_PC.zip             # Un dia complet de dades meteorològiques horàries (fitxers CSV, per a proves).
 ├── fitxers_buits.py               # Detecció de fitxers buits o no llegibles.
@@ -59,6 +51,7 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 ├── generate_seq.py                # Generació de seqüències temporals de grafs dinàmics.
 ├── all_sequences.py               # Agrupació de seqüències temporals en chunks per entrenament.
 ├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN.
+```
 
 ---
 
