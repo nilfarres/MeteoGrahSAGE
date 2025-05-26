@@ -1,3 +1,37 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+==============================================================================
+visualitzador_dades_prep.py
+
+Script per visualitzar ràpidament dades meteorològiques de fitxers CSV preprocessats.
+
+Aquest script llegeix un fitxer CSV amb dades meteorològiques preprocessades (sortida de prep.py) 
+i genera automàticament diferents mapes i visualitzacions bàsiques per a totes les 
+variables més rellevants: ubicació de les estacions, temperatura, humitat, precipitació (s'hi n'hi ha hagut), 
+direcció i força del vent, pressió atmosfèrica i altitud.
+
+FUNCIONALITATS:
+  - Llegeix un fitxer acabat en "dadesPC_utc.csv" i en crea una carpeta amb els mapes corresponents.
+  - Genera mapes amb la distribució de cada variable, utilitzant matplotlib.
+  - Visualitza la ubicació de les estacions, la temperatura, la humitat, la precipitació (si n'hi ha hagut), 
+    la direcció i força del vent, la pressió atmosfèrica i l'altitud.
+  - Desa cada gràfic com a imatge PNG dins una carpeta amb el nom del fitxer.
+
+INSTRUCCIONS D'ÚS:
+  1. Modifica la variable "file_path" per posar-hi el nom del fitxer que vols visualitzar.
+  2. Executa l'script. Es crearà una carpeta amb les imatges generades.
+  3. Trobaràs les visualitzacions (en format PNG) dins la carpeta "visualitzacio_[nom_fitxer]".
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: pandas, matplotlib, numpy, os
+
+AUTOR: Nil Farrés Soler
+==============================================================================
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
