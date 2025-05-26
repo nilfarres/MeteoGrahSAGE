@@ -46,12 +46,13 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 ├── visualitzador_dades_prep.py    # Visualització ràpida de fitxers preprocessats.
 ├── compute_PC_norm_params.py      # Càlcul de paràmetres de normalització dels Països Catalans.
 ├── PC_norm_params.json            # Fitxer generat amb les mitjanes i desviacions estàndard dels Països Catalans.
-├── toData.py                      # Conversió de fitxers preprocessats a grafs dinàmics (PyTorch Geometric).
-├── execute_toData.bat             # Fitxer d'execució de toData.py.
+├── toData.py                      # Conversió de fitxers preprocessats a grafs dinàmics (PyTorch Geometric). Execució amb execute_toData.bat.
 ├── generate_seq.py                # Generació de seqüències temporals de grafs dinàmics.
 ├── all_sequences.py               # Agrupació de seqüències temporals en chunks per entrenament.
-├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN.
+├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN. Execució amb run_MeteoGraphPC.bat.
 ```
+
+**Important: cal executar els codis en l'ordre anterior.**
 
 ---
 
@@ -82,58 +83,58 @@ pip install pandas numpy tqdm matplotlib scikit-learn torch torch_geometric torc
 
 ## Ordre d'execució i explicació de cada script
 
-### 1. **`fitxers_buits.py`**
-    - **Funció:** detecta fitxers CSV buits o no llegibles dins l'estructura de carpetes.
+ 1. **`fitxers_buits.py`**
+    - **Funció:** detectar fitxers CSV buits o no llegibles dins l'estructura de carpetes.
     - **Quan usar-lo:** com a primer pas, per assegurar que les dades d'origen no tinguin buits greus.
     - **Ús:** edita les variables de ruta i executa l'script. Es genera un fitxer amb el llistat de fitxers problemàtics.
     - **Requisits:** `pandas`, `tqdm`
 
-### 2. **`sense_nomcol.py`**
-    - **Funció:** detecta fitxers CSV que no tenen la capçalera estàndard a la primera línia.
+2. **`sense_nomcol.py`**
+    - **Funció:** detectar fitxers CSV que no tenen la capçalera estàndard a la primera línia.
     - **Quan usar-lo:** abans de processar, per detectar errors estructurals als fitxers.
     - **Ús:** edita les rutes al final de l'script i executa'l. Llista els fitxers sense capçalera correcta.
     - **Requisits:** `tqdm`
 
-### 3. **`prep.py`**
-    - **Funció:** preprocessament i neteja massiva de fitxers CSV meteorològics.
-    - **Tasques:** conversió d’unitats, càlcul de variables, filtratge de dades, interpolació de buits, etc.
+3. **`prep.py`**
+    - **Funció:** preprocessar i netejar els fitxers CSV meteorològics originals.
+    - **Tasques:** conversió d'unitats, càlcul de variables, filtratge de dades, interpolació de buits, etc.
     - **Quan usar-lo:** obligatòriament primer per generar les dades netes i homogènies.
     - **Ús:** edita les rutes al final del codi i executa'l. Les dades preprocessades es guarden en un nou directori.
     - **Requisits:** `pandas`, `numpy`, `cupy`, `tqdm`, `logging`
     
-### 4. **`visualitzador_dades_prep.py`**
-    - **Funció:** visualitza ràpidament mapes i distribucions bàsiques de les dades meteorològiques preprocessades.
+4. **`visualitzador_dades_prep.py`**
+    - **Funció:** visualitzar ràpidament mapes i distribucions bàsiques de les dades meteorològiques preprocessades.
     - **Ús:** edita la variable `file_path` pel fitxer que vols visualitzar. Executa'l i trobaràs les imatges generades en una carpeta.
     - **Requisits:** `pandas`, `matplotlib`, `numpy`, `os`
 
-### 5. **`compute_PC_norm_params.py`**
-    - **Funció:** calcula les mitjanes i desviacions estàndard globals de totes les variables meteorològiques.
+5. **`compute_PC_norm_params.py`**
+    - **Funció:** calcular les mitjanes i desviacions estàndard globals de totes les variables meteorològiques.
     - **Sortida:** fitxer `PC_norm_params.json` i gràfics histogrames.
     - **Quan usar-lo:** després de `prep.py` i abans de normalitzar/transformar les dades.
     - **Ús:** edita la variable d'entrada i executa'l. El fitxer JSON es farà servir als següents passos.
     - **Requisits:** `pandas`, `numpy`, `matplotlib`, `tqdm`
 
-### 6. **`toData.py`**
-    - **Funció:** converteix els fitxers CSV preprocessats en objectes de graf dinàmic compatibles amb PyTorch Geometric.
-    - **Quan usar-lo:** Un cop tens les dades preprocessades i els paràmetres de normalització.
-    - **Ús:** executa amb arguments de línia de comandes o fitxer `.bat`/`.sh`. S'han de passar les rutes d'entrada, sortida i el fitxer `PC_norm_params.json`.
+6. **`toData.py`**
+    - **Funció:** convertir els fitxers CSV preprocessats en objectes de graf dinàmic compatibles amb PyTorch Geometric.
+    - **Quan usar-lo:** un cop es tenen les dades preprocessades i els paràmetres de normalització.
+    - **Ús:** executa amb el fitxer `execute_toData.bat`. S'han de passar les rutes d'entrada, sortida i el fitxer `PC_norm_params.json`.
     - **Requisits:** `pandas`, `numpy`, `torch`, `torch_geometric`, `tqdm`, `networkx`, `scipy`
 
-### 7. **`generate_seq.py`**
-    - **Funció:** genera seqüències temporals de grafs (sliding window) per entrenar models seqüencials.
+7. **`generate_seq.py`**
+    - **Funció:** generar seqüències temporals de grafs (sliding window) per entrenar models seqüencials.
     - **Quan usar-lo:** un cop generats els snapshots horaris amb `toData.py`.
-    - **Ús:** executa'l amb arguments: directori d'entrada (snapshots `.pt`), directori de sortida, mida de finestra, stride, etc.
+    - **Ús:** executa'l havent definit els arguments següents: directori d'entrada (snapshots `.pt`), directori de sortida, mida de finestra, stride i horitzó de predicció.
     - **Requisits:** `torch`, `tqdm`, `argparse`, `glob`
 
-### 8. **`all_sequences.py`**
-    - **Funció:** agrupa les seqüències temporals en chunks grans (fitxers agrupats) per a processament massiu o per transferència/entrenament eficient.
+8. **`all_sequences.py`**
+    - **Funció:** agrupar les seqüències temporals en chunks grans (fitxers agrupats) per a processament massiu o per transferència/entrenament eficient.
     - **Ús:** modifica les variables de ruta i mida de chunk dins el codi. Executa'l i trobaràs els fitxers agrupats i les metadades.
     - **Requisits:** `torch`, `tqdm`, `glob`, `os`
 
-### 9. **`MeteoGraphPC.py`**
-    - **Funció:** entrena i avalua models GNN seqüencials sobre les seqüències de grafs dinàmics generades.
+9. **`MeteoGraphPC.py`**
+    - **Funció:** entrenar i avaluar les diverses verions del model MeteoGraphPC basat en GNN sobre les seqüències de grafs dinàmics generades.
     - **Característiques:** diverses arquitectures, validació, test, càlcul de mètriques i comparativa amb baselines.
-    - **Ús:** executa'l passant la ruta a les seqüències (`--seq_dir`) i la resta de paràmetres desitjats (features, targets, optimitzadors, etc.).
+    - **Ús:** executa'l amb el fitxer `run_MeteoGraphPC.sh` passant la ruta a les seqüències (`--seq_dir`) i la resta de paràmetres desitjats (features, targets, optimitzadors, etc.).
     - **Requisits:** `torch`, `torch_geometric`, `torch_geometric_temporal`, `numpy`, `pandas`, `tqdm`, `scikit-learn`
 
 ---
