@@ -1,3 +1,37 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+==============================================================================
+all_sequences.py
+
+Script per agrupar seqüències temporals de grafs meteorològics en chunks.
+
+Aquest script llegeix tots els fitxers de seqüència ".pt" generats prèviament 
+(amb "generate_seq.py"), els agrupa en lots (chunks) de mida configurable 
+(i opcionalment en guarda les metadades) per optimitzar el processament en 
+models de Machine Learning o per a transferència massiva de dades.
+
+FUNCIONALITATS PRINCIPALS:
+  - Busca i ordena automàticament tots els fitxers de seqüència ".pt" del directori especificat.
+  - Agrupa les seqüències en fitxers més grans, cadascun amb un nombre determinat de seqüències (chunk).
+  - Desa, per a cada chunk, un fitxer amb totes les seqüències i un altre amb només les metadades (noms de fitxer).
+  - Informa per pantalla del progrés i de qualsevol error de lectura de fitxers.
+
+INSTRUCCIONS D'ÚS:
+  1. Modifica les rutes "SEQ_DIR" i "OUTPUT_BASE" per indicar els directoris d'entrada i de sortida.
+  2. Configura la mida del chunk amb la variable "CHUNK_SIZE" a l'inici de l'script si cal (per defecte genera grups de 50 seqüències).
+  3. Executa l'script. Es generaran fitxers anomenats "chunk_XXX.pt" i "chunk_XXX_meta.pt" al directori de sortida.
+  4. Revisa els missatges d'error per si hi ha fitxers que no s'han pogut carregar correctament.
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: torch, tqdm, glob, os
+
+AUTOR: Nil Farrés Soler
+==============================================================================
+"""
+
 import torch
 import glob
 import os
