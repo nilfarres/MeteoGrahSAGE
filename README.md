@@ -47,7 +47,7 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 ├── compute_PC_norm_params.py      # Càlcul de paràmetres de normalització dels Països Catalans.
 ├── PC_norm_params.json            # Fitxer generat amb les mitjanes i desviacions estàndard dels Països Catalans.
 ├── toData.py                      # Conversió de fitxers preprocessats a grafs dinàmics (PyTorch Geometric).
-├── execute_toData.bat             # Fitxer d'execució de `toData.py`.
+├── execute_toData.bat             # Fitxer d'execució de toData.py.
 ├── generate_seq.py                # Generació de seqüències temporals de grafs dinàmics.
 ├── all_sequences.py               # Agrupació de seqüències temporals en chunks per entrenament.
 ├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN.
@@ -80,7 +80,7 @@ pip install pandas numpy tqdm matplotlib scikit-learn torch torch_geometric torc
 
 ---
 
-## Ordre d’execució i explicació dels scripts essencials
+## Ordre d'execució i explicació de cada script
 
 ### 1. **`fitxers_buits.py`**
     - **Funció:** detecta fitxers CSV buits o no llegibles dins l'estructura de carpetes.
