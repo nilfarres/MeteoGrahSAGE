@@ -1,7 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+==============================================================================
 toData.py
+
+Script per transformar fitxers CSV meteorològics en objectes PyTorch Geometric Data.
+
+Aquest script recorre recursivament el directori DADES_METEO_PC_PREPROCESSADES amb fitxers CSV preprocessats 
+(sortida del codi "prep.py"), crea grafs dinàmics horaris d'estacions meteorològiques, calcula 
+les característiques dels nodes i arestes, i desa el resultat en fitxers ".pt" 
+compatibles amb PyTorch Geometric.
+
+FUNCIONALITATS PRINCIPALS:
+  - Processa cada fitxer acabat en "dadesPC_utc.csv" i genera un graf dinàmic horari amb la informació de les estacions (nodes) i les relacions entre elles (arestes).
+  - Calcula les característiques dels nodes (variables meteorològiques i derivades).
+  - Calcula la posició geogràfica, la connectivitat per Delaunay i radi adaptatiu, i atributs d'arestes.
+  - Aplica la normalització global segons els paràmetres calculats prèviament (PC_norm_params.json).
+  - Gestiona el processament paral·lel i permet optimitzacions (GPU, multiescala, pes d'arestes, etc.).
+  - Permet diverses opcions configurables via arguments de la línia de comandes.
+
+INSTRUCCIONS D’ÚS:
+  1. Important: cal haver executat prèviament els codis "prep.py" i "compute_PC_norm_params.py" en aquest ordre.
+  2. Passa com a argument el camí al fitxer JSON (PC_norm_params.json) amb els paràmetres globals de normalització (--PC_norm_params) generat per "compute_PC_norm_params.py".
+  3. Edita o especifica les rutes d'entrada i sortida si cal (--input_root, --output_root).
+  4. Tria els paràmetres de processament segons la teva necessitat (nombre de veïns, normalització, GPU, etc.).
+  5. Executa l'script via terminal o directament amb els paràmetres necessaris.
+  6. Els fitxers ".pt" resultants es podran utilitzar com a entrada per a models PyTorch Geometric.
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: pandas, numpy, torch, torch_geometric, tqdm, networkx, scipy
+
+AUTOR: Nil Farrés Soler
+==============================================================================
 """
 
 # --------------------------------------------------------------------------- #
