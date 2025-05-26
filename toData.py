@@ -19,7 +19,7 @@ FUNCIONALITATS PRINCIPALS:
   - Gestiona el processament paral·lel i permet optimitzacions (GPU, multiescala, pes d'arestes, etc.).
   - Permet diverses opcions configurables via arguments de la línia de comandes.
 
-INSTRUCCIONS D’ÚS:
+INSTRUCCIONS D'ÚS:
   1. Important: cal haver executat prèviament els codis "prep.py" i "compute_PC_norm_params.py" en aquest ordre.
   2. Passa com a argument el camí al fitxer JSON (PC_norm_params.json) amb els paràmetres globals de normalització (--PC_norm_params) generat per "compute_PC_norm_params.py".
   3. Edita o especifica les rutes d'entrada i sortida si cal (--input_root, --output_root).
