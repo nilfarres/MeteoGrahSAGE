@@ -1,8 +1,43 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
+==============================================================================
 generate_seq.py
+
+Script per generar seqüències temporals de grafs meteorològics dinàmics.
+
+Aquest script processa una carpeta de snapshots horaris en format ".pt" 
+(generats per "toData.py") i crea seqüències temporals preparades per entrenar 
+models de Graph Neural Networks amb PyTorch Geometric Temporal.
+
+FUNCIONALITATS PRINCIPALS:
+  - Llegeix automàticament tots els fitxers acabats en ".pt" del directori DADES_METEO_PC_TO_DATA i ordena cronològicament.
+  - Genera seqüències temporals de finestra lliscant (sliding window) amb una longitud i un stride configurables.
+  - Genera les etiquetes futures (targets) amb un horitzó de predicció configurable.
+  - Remapeja globalment tots els nodes a la mateixa unió d'IDs per facilitar el processament per batch.
+  - Desa cada seqüència com a fitxer ".pt" a la carpeta de sortida, amb totes les dades i màscares necessàries.
+  - Permet processament paral·lel per accelerar la generació de seqüències.
+
+INSTRUCCIONS D'ÚS:
+  1. Important: cal haver executa prèviament "prep.py", "compute_PC_norm_params" i "toData.py" en aquest ordre.
+  2. Configura els arguments de la línia de comandes:
+      --input_dir    (directori amb els grafs horaris ".pt" d'entrada, per defecte DADES_METEO_PC_TO_DATA).
+      --output_dir   (directori de sortida de les seqüències temporals generades).
+      --window_size  (llargada de la seqüència, en hores).
+      --stride       (interval entre seqüències, en hores).
+      --num_workers  (processos en paral·lel, opcional).
+  3. Modifica el valor de la variable HORIZON_HOURS a l'inici de l'script per definir l'horitzó de predicció de cada seqüència (per defecte 6 hores).
+  3. Executa l'script i trobaràs les seqüències generades a la carpeta de sortida.
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: torch, tqdm, argparse, glob
+
+AUTOR: Nil Farrés Soler
+==============================================================================
 """
+
 import os
 import glob
 import argparse
