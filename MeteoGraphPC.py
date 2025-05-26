@@ -1,7 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-MeteoGraphPC.py
+==============================================================================
+Script per entrenar i avaluar les diverses versions del model MeteoGraphPC.
+
+Aquest script permet entrenar, validar i testar diferents arquitectures de xarxes neuronals 
+en grafs dinàmics, dissenyades per a la predicció de variables meteorològiques a partir de 
+seqüències de grafs d'estacions (preparades prèviament amb "generate_seq.py" i "all_sequences.py").
+
+FUNCIONALITATS PRINCIPALS:
+  - Carrega i gestiona grans conjunts de seqüències temporals agrupades en chunks.
+  - Disposa de diverses arquitectures de model: 
+      * MeteoGraphPC_v1 (GCN + GRU).
+      * MeteoGraphPC_v2 (GCN + TCN dilatat).
+      * MeteoGraphPC_v3 (GCN + TCN + atenció espacial).
+      * MeteoGraphPC_v4 (Transformer temporal + GAT amb edge_attr).
+  - Permet especificar quines features d'entrada i target s'utilitzen / es volen predir.
+  - Normalitza automàticament els targets segons paràmetres calculats o llegits del fitxer PC_norm_params.json (ja generat amb "compute_PC_norm_params.py").
+  - Realitza el training loop amb validació, early stopping i checkpointing del millor model.
+  - Calcula mètriques de test (RMSE, MAE, R², MAPE) i les compara amb dos baselines: persistència i climatologia.
+  - Desa els logs d'entrenament i resultats en CSV, i guarda automàticament els checkpoints.
+
+INSTRUCCIONS D'ÚS:
+  1. Important: cal haver executat abans els fitxers "prep.py", "compute_PC_norm_params", "toData.py", "generate_seq.py" i "all_sequences.py" en aquest ordre.
+  2. Aquest fitxer es pot executar amb el fitxer run_MeteoGraphPC.sh, variant els diferents paràmetres disponibles.
+  3. Alerta amb la instal·lació de les diverses llibreries. Cal assegurar que no hi hagi inconsistències entre elles.
+  4. Indica el directori de les seqüències (--seq_dir) i la resta de paràmetres desitjats.
+  5. Executa l'script i segueix l'entrenament per terminal o mitjançant el fitxer de logs CSV.
+  6. Consulta els checkpoints guardats i les mètriques de test obtingudes.
+
+REQUISITS:
+  - Python 3.x
+  - Llibreries: torch, torch_geometric, torch_geometric_temporal, numpy, pandas, tqdm, scikit-learn
+
+AUTOR: Nil Farrés Soler
+==============================================================================
 """
 
 from __future__ import annotations
