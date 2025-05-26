@@ -2,7 +2,7 @@
 
 **Nil Farrés Soler , juny de 2025**
 
-Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament de les diverses versions del model MeteoGraphPC basades en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Tot el procés està pensat per ser robust, escalable i reutilitzable.
+Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament de diverses versions del model MeteoGraphPC basades en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Es compta amb dades meteorològiques horàries des de 2016 i fins a 2024 cedides per la secció de meteorologia de 3Cat. Tot el procés està pensat per ser robust, escalable i reutilitzable.
 
 A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de gener de 2016)** de dades meteorològiques oficials, a raó d'un fitxer CSV per hora, dins el fitxer `DADES_METEO_PC.zip`. Això permet provar el pipeline sense necessitat de descarregar grans volums de dades.
 
@@ -163,7 +163,7 @@ Aquest repositori inclou el fitxer **DADES_METEO_PC.zip**, que conté un dia com
 
 - Aquest conjunt de dades d'exemple et permet provar tot el pipeline sense necessitat de descarregar dades massives. Ara bé, caldrà modificar la funció `split` del codi MeteoGraphPC.py ja que ara es troba creada amb l'objectiu de dividir el dataset complet de dades (entre 2016 i 2024).  
 - es poden modificar en qualsevol moment les rutes d'entrada als scripts segons on s'hagi desat la carpeta descomprimida.
-- Per treballar amb més dades, cal posar-se en contacte amb l'autor d'aquest projecte i es valorarà la sol·licitud.
+- Per treballar amb més dades, cal posar-se en contacte amb l'autor d'aquest projecte o amb la secció de meteorologia de 3Cat i es valorarà la sol·licitud.
 
 ---
 
@@ -199,7 +199,9 @@ Aquest projecte ha estat desenvolupat per:
 - Correu electrònic: nil.farres@autonoma.cat  
 - GitHub: [github.com/nilfarres](https://github.com/nilfarres)
 
-Si es tenen dubtes o suggeriments, no dubtar a posar-se en contacte.  
+Amb la col·laboració de la [secció de meteorologia de 3Cat](https://www.3cat.cat/el-temps/) i el [Centre de Visió per Computador](https://www.cvc.uab.es/).
+
+Si es tenen dubtes o suggeriments, no dubtar a posar-se en contacte amb l'autor d'aquest projecte.  
 S'agrairà qualsevol feedback o menció de resultats obtinguts gràcies a aquest projecte.
 
 ---
