@@ -17,7 +17,8 @@ A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de
 - [Com utilitzar les dades d'exemple](#com-utilitzar-les-dades-dexemple)
 - [Notes addicionals i recomanacions](#notes-adicionals-i-recomanacions)
 - [Autor i contacte](#autor-i-contacte)
-- [Llicència](#llicència)
+- [Condicions d’ús i citació](#condicions-dús-i-citació)
+- [Política de privacitat](#política_de_privacitat)
 
 ---
 
@@ -76,7 +77,12 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 
 **Instal·lació ràpida de dependències principals:**
 ```bash
-pip install pandas numpy tqdm matplotlib scikit-learn torch torch_geometric torch_geometric_temporal networkx scipy argparse cupy
+conda create -n meteographpc python==3.8
+conda activate meteographpc
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-1.12.1+cu113.html
+pip install torch_geometric
+pip install torch-geometric-temporal==0.56.0
 ```
 
 ---
