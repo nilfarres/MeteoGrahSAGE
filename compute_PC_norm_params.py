@@ -49,6 +49,7 @@ logging.basicConfig(
     handlers=[logging.FileHandler(log_filename)]
 )
 
+TRAIN_YEARS = set(range(2016, 2023))
 ADD_WIND_COMPONENTS = True
 
 # Definició de FEATURE_COLUMNS que s'utilitzaran a toData.py
@@ -125,6 +126,8 @@ def add_potential_temperature(df: pd.DataFrame, pressure_ref: float) -> pd.DataF
     Calcula la temperatura potencial en Kelvin utilitzant Temp ja convertida a Kelvin.
     La fórmula és: θ = T * (P₀ / P)^(R/cₚ), amb R/cₚ ≈ 0.286.
     """
+    # Suposem que df['Patm'] encara conté la pressió mesurada (sense la referència restada)
+    # i Temp ja és en Kelvin
     df['PotentialTemp'] = df['Temp'] * (pressure_ref / df['Patm'])**0.286
     return df
 
@@ -221,6 +224,11 @@ all_files = glob.glob(os.path.join(input_root, "**", "*dadesPC_utc.csv"), recurs
 data_list = []
 
 for file in tqdm(all_files, desc="Processant fitxers"):
+    # Filtra només els anys del conjunt d'entrenament
+    base = os.path.basename(file)
+    any_fitxer = int(base[:4])
+    if any_fitxer not in TRAIN_YEARS:
+        continue
     try:
         df = pd.read_csv(file)
 
