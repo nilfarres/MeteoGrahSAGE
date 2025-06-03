@@ -33,8 +33,8 @@ Exemple d'ús:
         --output mapa_temp_01jun2025.png
 
 Autor: Nil Farrés Soler
-Data: juny 2025
 """
+
 import os
 import sys
 import argparse
