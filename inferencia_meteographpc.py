@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 # ------------------- CONFIGURACIÓ -------------------
 
-# 1. Fitxers d'entrada (adapta noms si cal) :contentReference[oaicite:0]{index=0}
-PRED_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec_prova4/y_pred_test.npy'
-TRUE_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec_prova4/y_true_test.npy'
+# 1. Fitxers d'entrada (adapta noms si cal)
+PRED_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec/y_pred_test.npy'
+TRUE_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec/y_true_test.npy'
 NODES_PATH  = 'nodes_metadata.csv'
 
 # 2. Paràmetres de la generació de seqüències:
@@ -28,7 +28,7 @@ variables = [
 y_pred = np.load(PRED_PATH)   # shape: [S, H, N, F]
 y_true = np.load(TRUE_PATH)   # shape: [S, H, N, F]
 
-# → NOMÉS LA PRIMERA SEQÜÈNCIA
+# → NOMÉS LA PRIMERA SEQÜÈNCIA (modificar en funció del que es vulgui)
 y_pred = y_pred[:1]  # shape: [1, H, N, F]
 y_true = y_true[:1]
 S, H, N, F = y_pred.shape
@@ -113,7 +113,7 @@ y_true_phys[..., idx_vv] = y_true_flat[..., idx_vv] * 3.6
 
 # ------------------- CREACIÓ DEL NetCDF -------------------
 
-OUTPUT_NC = 'C:/Users/nfarres/Documents/TFG/models/exec_prova4/predictions_meteographpc_test.nc'
+OUTPUT_NC = 'C:/Users/nfarres/Documents/TFG/models/exec/predictions_meteographpc_test.nc'
 ncfile = Dataset(OUTPUT_NC, mode='w', format='NETCDF4')
 
 # Dimensions
