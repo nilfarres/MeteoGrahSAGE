@@ -34,6 +34,9 @@ REQUISITS:
   - Python 3.x
   - Llibreries: torch, tqdm, argparse, glob
 
+Exemple d'execució:
+python generate_seq.py --input_dir D:\DADES_METEO_PC_TO_DATA --output_dir F:\ws48_str12_hh6\DADES_METEO_PC_generated_seqs_ws48_str12_hh6 --window_size 48 --stride 12
+
 AUTOR: Nil Farrés Soler
 ==============================================================================
 """
@@ -53,7 +56,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-HORIZON_HOURS = 6  # Horitzó de predicció en hores (6h = 6, 12h = 12, 24h = 24, etc.)
+HORIZON_HOURS = 6  # Horitzó de predicció en hores (6h = 6, 12h = 12, 24h = 24, etc.) -> CAL MODIFICAR AQUEST PARAMETRE A AQUI!
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -72,8 +75,8 @@ def parse_args():
         help="Nombre d'hores per seqüència (per defecte: 48)"
     )
     parser.add_argument(
-        '--stride', type=int, default=6,
-        help='Salt en hores entre inici de seqüències (per defecte: 6)'
+        '--stride', type=int, default=12,
+        help='Salt en hores entre inici de seqüències (per defecte: 12)'
     )
     parser.add_argument(
         '--num_workers', type=int, default=4,
