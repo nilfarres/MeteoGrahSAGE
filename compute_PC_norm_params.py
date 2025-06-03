@@ -48,7 +48,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler(log_filename)]
 )
-
 TRAIN_YEARS = set(range(2016, 2023))
 ADD_WIND_COMPONENTS = True
 
@@ -126,9 +125,7 @@ def add_potential_temperature(df: pd.DataFrame, pressure_ref: float) -> pd.DataF
     Calcula la temperatura potencial en Kelvin utilitzant Temp ja convertida a Kelvin.
     La fórmula és: θ = T * (P₀ / P)^(R/cₚ), amb R/cₚ ≈ 0.286.
     """
-    # Suposem que df['Patm'] encara conté la pressió mesurada (sense la referència restada)
-    # i Temp ja és en Kelvin
-    df['PotentialTemp'] = df['Temp'] * (pressure_ref / df['Patm'])**0.286
+    df['PotentialTemp'] = df['Temp'] * (pressure_ref / df['Patm_orig'])**0.286
     return df
 
 def add_dew_point(df: pd.DataFrame) -> pd.DataFrame:
@@ -268,13 +265,14 @@ for file in tqdm(all_files, desc="Processant fitxers"):
         df['Pluja'] = np.log1p(df['Pluja'])
 
         pressure_ref = 1013.0
+        df['Patm_orig'] = df['Patm']
         df = add_dew_point(df)
         df = add_potential_temperature(df, pressure_ref)
 
         # Reescalar la humitat de 0-100 a 0-1
         df['Humitat'] = df['Humitat'] / 100.0
 
-        df['Patm'] = df['Patm'] - pressure_ref
+        df['Patm'] = df['Patm_orig'] - pressure_ref
 
         # Seleccionar les columnes definides per FEATURE_COLUMNS
         df = df[FEATURE_COLUMNS]
