@@ -53,7 +53,7 @@ from torch_geometric.utils import coalesce, remove_self_loops
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import networkx as nx
-from scipy.spatial import Delaunay   # Backbone planari
+from scipy.spatial import Delaunay
 
 # --------------------------------------------------------------------------- #
 # Paràmetres per defecte                                                      #
@@ -374,7 +374,6 @@ def create_node_features(df: pd.DataFrame, excl_temp_norm: bool,
 
     # Kelvin, %➜[0,1], log1p pluja
     df['Temp']    += 273.15
-    df['Humitat'] /= 100.0
     if log_pluja:
         df['Pluja'] = np.log1p(np.maximum(
             pd.to_numeric(df['Pluja'], errors='coerce').fillna(0), 0))
@@ -384,6 +383,8 @@ def create_node_features(df: pd.DataFrame, excl_temp_norm: bool,
     # DewPoint & PotentialTemp
     df = add_dew_point(df)
     df = add_potential_temperature(df, p_ref)
+
+    df['Humitat'] /= 100.0
 
     # Alt_norm si cal
     if 'Alt_norm' not in df.columns:
@@ -572,7 +573,7 @@ def process_all_files(input_root, output_root, max_workers,
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
 def parse_args():
-    P = argparse.ArgumentParser("CSV -> Data MeteoGraphSAGE")
+    P = argparse.ArgumentParser("CSV -> Data MeteoGraphPC")
     P.add_argument("--input_root",  default=DEFAULT_INPUT_ROOT)
     P.add_argument("--output_root", default=DEFAULT_OUTPUT_ROOT)
     P.add_argument("--max_workers", type=int, default=DEFAULT_MAX_WORKERS)
