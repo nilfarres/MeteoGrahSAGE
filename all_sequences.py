@@ -37,10 +37,10 @@ import glob
 import os
 from tqdm import tqdm
 
-SEQ_DIR = r'F:\ws120_str12_hh120\DADES_METEO_PC_generated_seqs_v8_ws120_str12_hh120' #Substituir pels directoris pertinents
-OUTPUT_BASE = r'F:\ws120_str12_hh120\All_Sequences_v8_ws120_str12_hh120_chunksde50'
+SEQ_DIR = r'F:\ws48_str12_hh6\DADES_METEO_PC_generated_seqs_ws48_str12_hh6'
+OUTPUT_BASE = r'F:\ws48_str12_hh6\All_Sequences_ws48_str12_hh6_chunksde50'
 
-CHUNK_SIZE = 50  # Nombre de seqüències per fitxer agrupat
+CHUNK_SIZE = 50  # Nombre de seqüències per fitxer agrupat -> CAL MODIFICAR AQUEST PARAMETRE A AQUI!
 
 # 1. Troba i ordena tots els fitxers de seqüència
 fitxers = sorted(glob.glob(os.path.join(SEQ_DIR, "*.pt")))
