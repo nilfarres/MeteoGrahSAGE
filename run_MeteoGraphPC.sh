@@ -1,67 +1,64 @@
-#!/bin/bash -l
-#SBATCH --job-name=MeteoGraphPC_Train
-#SBATCH --partition=tfg
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --gres=gpu:1
-#SBATCH --mem=59G
-#SBATCH --time=7-00:00:00
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#!/bin/bash
+# Script per entrenar MeteoGraphPC directament en un node de càlcul sense SLURM
 
 set -euo pipefail
+#set -x
+echo ">>> Script iniciat correctament"
 
-# ───────────────────────────────────────────────────────────────────────────── #
-#  Configuració de CUDA i SLURM                                                 #
-# ───────────────────────────────────────────────────────────────────────────── #
-export CUDA_HOME=/usr/local/cuda-12.4
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH="$CUDA_HOME/lib64:${LD_LIBRARY_PATH:-}"
-export CUDA_VISIBLE_DEVICES=$(seq -s, 0 $(($SLURM_GPUS_ON_NODE-1)))
+# ───────────────────────────────────────────────────────────── #
+# LÍMIT DE RAM: 100GB (ajustable segons la disponibilitat i el que vols usar)
+ulimit -v $((100 * 1024 * 1024))
 
-# ───────────────────────────────────────────────────────────────────────────── #
-#  Entorn Python / Conda                                                       #
-# ───────────────────────────────────────────────────────────────────────────── #
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate tfg_env
+# ───────────────────────────────────────────────────────────── #
+# CONFIGURACIÓ MANUAL DE LA GPU
+export CUDA_VISIBLE_DEVICES=1     # <-- Canvia-ho segons quina GPU vulguis usar!
 
+# ───────────────────────────────────────────────────────────── #
+# ACTIVACIÓ DE L'ENTORN CONDA
+#source ~/miniconda3/etc/profile.d/conda.sh
+#set +u
+#conda activate meteographpc
+#set -u
+
+# ───────────────────────────────────────────────────────────── #
+# LIMITACIÓ DE RECURSOS CPU/RAM
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 
-mkdir -p $SLURM_SUBMIT_DIR/logs
+# ───────────────────────────────────────────────────────────── #
+# DIRECTORI DE LOGS
+mkdir -p logs
 
-# ───────────────────────────────────────────────────────────────────────────── #
-#  Paràmetres de l’entrenament                                                  #
-# ───────────────────────────────────────────────────────────────────────────── #
-SEQ_DIR="/fhome/nfarres/All_Sequences_v8_ws48_str12_hh6_chunksde100"
-BATCH_SIZE=4
-EPOCHS=30
-LR=1e-3
+# ───────────────────────────────────────────────────────────── #
+# PARÀMETRES D'ENTRENAMENT
+SEQ_DIR="/data2/users/nfarres/All_Sequences_ws48_str12_hh6_chunksde50"
+BATCH_SIZE=8
+EPOCHS=20
+LR=1e-5
 LR_SCHEDULER="onecycle"
 HIDDEN_DIM=128
-PATIENCE=5
+PATIENCE=8
 MIN_DELTA=1e-4
 DEVICE="cuda"
 GRAD_CLIP=1.0
 STD_EPS=1e-6
-DL_NUM_WORKERS=1
+DL_NUM_WORKERS=2        
 MODEL="MeteoGraphPC_v1"
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
-# Modificar en funció de les seqüències generades amb generate_seq.py
-WS=48 # Mida finestra (window size)
-STR=6 # Passos entre finestres (stride)
-HH=6  # Horitzo de prediccio (horizon)
+WS=48 # window size
+STR=12 # stride
+HH=6  # horitzó predicció
 
+SAVE_DIR="/data2/users/nfarres/checkpoints/${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}"
+LOG_CSV="/data2/users/nfarres/checkpoints/${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}/train_${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}.csv"
+NORM_JSON="PC_norm_params.json"
 
-# ───────────────────────────────────────────────────────────────────────────── #
-#  Llançament de l’script Python                                                #
-# ───────────────────────────────────────────────────────────────────────────── #
+# ───────────────────────────────────────────────────────────── #
+# EXECUCIÓ DEL MODEL
 echo "=== Inici entrenament: $(date '+%Y-%m-%d %H:%M:%S') ==="
-ulimit -n 16384
-srun python MeteoGraphPC.py \
+python MeteoGraphPC.py \
   --seq_dir      $SEQ_DIR \
   --batch_size   $BATCH_SIZE \
   --epochs       $EPOCHS \
@@ -69,8 +66,8 @@ srun python MeteoGraphPC.py \
   --lr_scheduler $LR_SCHEDULER \
   --hidden_dim   $HIDDEN_DIM \
   --model        $MODEL \
-  --input_indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
-  --target_indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 \
+  --input_indices  0  1  2  3  4  5  6  7  8  9  10  11  12  13  14  15  16 \
+  --target_indices 0  1  2  3  4  15 16 \
   --use_edge_attr \
   --use_mask \
   --dl_num_workers $DL_NUM_WORKERS \
@@ -79,8 +76,9 @@ srun python MeteoGraphPC.py \
   --device       $DEVICE \
   --grad_clip    $GRAD_CLIP \
   --std_eps      $STD_EPS \
-  --save_dir     ${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP} \
-  --log_csv      ${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}/train_${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}.csv \
-  --norm_json    PC_norm_params.json
+  --save_dir     $SAVE_DIR \
+  --log_csv      $LOG_CSV \
+  --norm_json    $NORM_JSON \
+  | tee logs/train_${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}.log
 
 echo "=== Fi entrenament:   $(date '+%Y-%m-%d %H:%M:%S') ==="
