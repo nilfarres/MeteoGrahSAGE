@@ -85,6 +85,11 @@ warnings.filterwarnings("ignore",
                         category=FutureWarning,
                         message=".*GradScaler.*")
 
+warnings.filterwarnings(
+    action='ignore',
+    message="Detected call of `lr_scheduler.step\(\)` before `optimizer.step\(\)`"
+)
+
 # ───────────────────────────────── UTILITATS ──────────────────────────────────
 def set_seed(s: int) -> None:
     random.seed(s)
@@ -96,15 +101,17 @@ def set_seed(s: int) -> None:
     torch.backends.cudnn.benchmark = True
 
 def collate(batch):
-    xs, eis, eas, masks, ids_seq, ys = [], [], [], [], [], []
-    for x_seq, ei_seq, ea_seq, mask_seq, id_seq, y_seq in batch:
+    xs, eis, eas, masks, ids_seq, ys, y_masks = [], [], [], [], [], [], []
+    for x_seq, ei_seq, ea_seq, mask_seq, id_seq, y_seq, y_mask_seq in batch:
         xs.append(x_seq)
         eis.append(ei_seq)
         eas.append(ea_seq)
         masks.append(mask_seq)
         ids_seq.append(id_seq)
         ys.append(torch.stack(y_seq, dim=0))
-    return xs, eis, eas, masks, ids_seq, torch.stack(ys)
+        y_masks.append(y_mask_seq)
+    # Retornem també la llista de y_masks (cada y_mask_seq és una llista de tensors [N])
+    return xs, eis, eas, masks, ids_seq, torch.stack(ys), y_masks
 
 
 def moving_average(prev_mean, prev_var_times_n, new_vec, n_seen):
@@ -173,7 +180,10 @@ class GraphSeqDataset(Dataset):
         ea_seq = d["edge_attr_seq"]
         mask_seq = d["mask_seq"]
 
-        return x_seq, clean_ei_seq, ea_seq, mask_seq, id_seq, y_seq
+        # Afegeim la màscara de valors futurs (y_mask_seq), que també és una llista de tensors [N]
+        y_mask_seq = d["y_mask_seq"]
+
+        return x_seq, clean_ei_seq, ea_seq, mask_seq, id_seq, y_seq, y_mask_seq
 
 
 class TemporalConvCell(nn.Module):
@@ -262,10 +272,17 @@ class TemporalDilatedCNN(nn.Module):
         super().__init__()
         layers = []
         for i in range(num_layers):
-            dilation = 2**i
-            layers.append(nn.Conv1d(d_in if i==0 else d_hidden, d_hidden,
-                                    kernel_size=kernel_size, padding='same', dilation=dilation))
-            layers.append(nn.LayerNorm([d_hidden, -1]))
+            dilation = 2 ** i
+            layers.append(nn.Conv1d(
+                d_in if i == 0 else d_hidden,
+                d_hidden,
+                kernel_size=kernel_size,
+                padding='same',
+                dilation=dilation
+            ))
+            layers.append(TransposeLayer(1, 2))
+            layers.append(nn.LayerNorm(d_hidden))
+            layers.append(TransposeLayer(1, 2))
             layers.append(nn.GELU())
             layers.append(nn.Dropout(dropout))
         self.net = nn.Sequential(*layers)
@@ -348,62 +365,52 @@ class GATwithEdgeAttr(nn.Module):
         out = self.ln(self.dropout(out) + x)
         return out
     
+class TransposeLayer(nn.Module):
+    def __init__(self, dim1, dim2):
+        super().__init__()
+        self.dim1 = dim1
+        self.dim2 = dim2
+    def forward(self, x):
+        return x.transpose(self.dim1, self.dim2)    
 
 # ───────────────────────────────── MODELS ──────────────────────────────────────
 
 
 class MeteoGraphPC_v1(nn.Module):
-    def __init__(self, in_channels: int, hidden: int = 128, out_channels: int = None, horizon: int = None, p_dropout: float = 0.2):
+    def __init__(self, in_channels: int, hidden: int = 128, out_channels: int = None, horizon: int = None, target_indices: list[int] = None, p_dropout: float = 0.3):
         super().__init__()
-        # cèl·lula temporal TGCN que combina GCN + GRU
-        self.tgcn_cell = TGCN(in_channels, hidden)
+        # paràmetres
+        self.in_channels = in_channels                  # 17
+        self.out_channels = out_channels or in_channels  # 12
         self.hidden_size = hidden
-        self.out_channels = out_channels or in_channels
+        self.horizon = horizon
+        self.target_idx = target_indices                 # ex: [0,1,2,3,4,6,7,9,10,11,13,15,16] segons l’ordre
+
+        # cèl·lula temporal TGCN
+        self.tgcn_cell = TGCN(in_channels, hidden)
         self.dropout = nn.Dropout(p=p_dropout)
         self.head = nn.Linear(hidden, self.out_channels)
-        self.horizon = horizon
 
-    def forward(self, x_seq, ei_seq, ea_seq, mask_seq, id_seq):
-        """
-        x_seq:    [T] llista de tensors [N_global x F]
-        ei_seq:   [T] llista d'edge_index globals
-        ea_seq:   [T] llista d'edge_attr globals
-        mask_seq: [T] llista de booleans [N_global] (nodes presents)
-        id_seq:   (ignored)
-        """
-        N_global = x_seq[0].size(0)
-        H = self.hidden_size
-        # Diccionari d’estats: index_global → Tensor([H])
-        h_dict: dict[int, Tensor] = {}
+    def forward(self, x_seq, ei_seq, ea_seq, mask_seq, id_seq=None):
+        N, H = x_seq[0].size(0), self.hidden_size
 
-        # 1) Encoding: per cada timestamp, passem el grafo sencer
+        # 1) Encoding
+        h_dict = {}
         for x, ei, ea, mask in zip(x_seq, ei_seq, ea_seq, mask_seq):
-            # 1.1) Construir h_prev global: [N_global, H]
-            h_prev = x.new_zeros((N_global, H))
-            # Omplir només per a nodes presents
+            h_prev = x.new_zeros((N, H))
             present = mask.nonzero(as_tuple=False).view(-1).tolist()
             if h_dict:
                 idxs = [i for i in present if i in h_dict]
                 if idxs:
-                    h_prev_vals = torch.stack([h_dict[i] for i in idxs], dim=0)
-                    h_prev[idxs] = h_prev_vals
-
-            # 1.2) Extracció edge_weight 1D
-            if ea is not None:
-                edge_weight = ea[:, 0] if ea.dim() > 1 else ea
-            else:
-                edge_weight = None
-
-            # 1.3) Càrrega a la cèl·lula TGCN
-            h_new = self.tgcn_cell(x, ei, edge_weight, h_prev)
-
-            # 1.4) Actualitzar h_dict sols pels nodes presents
+                    h_vals = torch.stack([h_dict[i] for i in idxs], dim=0)
+                    h_prev[idxs] = h_vals
+            ew = ea[:,0] if (ea is not None and ea.dim()>1) else ea
+            h_new = self.tgcn_cell(x, ei, ew, h_prev)
             for i in present:
                 h_dict[i] = h_new[i]
 
-        # 2) Decodificació autoregressiva sobre el grafo sencer
-        #    Primer h_prev = estat dels nodes presents al darrer pas
-        h_prev = x_seq[-1].new_zeros((N_global, H))
+        # 2) Decoding autoregressiu
+        h_prev = x_seq[-1].new_zeros((N, H))
         present = mask_seq[-1].nonzero(as_tuple=False).view(-1).tolist()
         idxs = [i for i in present if i in h_dict]
         if idxs:
@@ -412,18 +419,25 @@ class MeteoGraphPC_v1(nn.Module):
 
         preds = []
         for _ in range(self.horizon):
-            inp = preds[-1] if preds else x_seq[-1]
-            if ea_seq[-1] is not None:
-                ew = ea_seq[-1][:, 0] if ea_seq[-1].dim() > 1 else ea_seq[-1]
+            if preds:
+                # reconstrucció de l’input complet [N × in_channels]
+                prev_y = preds[-1]               # [N × out_channels]
+                inp = x_seq[-1].clone()         # [N × in_channels]
+                # sobrescriu només les columnes target
+                for j, ti in enumerate(self.target_idx):
+                    inp[:, ti] = prev_y[:, j]
             else:
-                ew = None
+                inp = x_seq[-1]  # primer pas, input real
+
+            ew = ea_seq[-1][:,0] if (ea_seq[-1] is not None and ea_seq[-1].dim()>1) else ea_seq[-1]
             h_new = self.tgcn_cell(inp, ei_seq[-1], ew, h_prev)
             h_new = self.dropout(h_new)
-            y_hat = self.head(h_new)      # → [N_global × out_channels]
+
+            y_hat = self.head(h_new)  # [N × out_channels]
             preds.append(y_hat)
-            # Per al següent pas, l’estat complet és aquest
             h_prev = h_new
 
+        # retorna seqüència de prediccions [horizon × N × out_channels]
         return torch.stack(preds, dim=0)
 
 
@@ -578,14 +592,38 @@ class MeteoGraphPC_v3(nn.Module):
         self.head = nn.Linear(hidden_dim, n_targets)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x_seq, edge_index_seq, edge_attr_seq, mask_seq=None):
+    def forward(self, x_seq, edge_index_seq, edge_attr_seq, mask_seq=None, id_seq=None):
         """
         x_seq: [B, T, N, F] — seqüència d'entrada (features)
         edge_index_seq: [T][2, E] — llista per pas temporal
         edge_attr_seq: [T][E, d_edge]
         mask_seq: [B, T, N] — màscara de nodes vàlids
         """
-        B, T, N, F = x_seq.shape
+        # Compatibilitat amb DataLoader
+        if isinstance(x_seq, list):
+            if all(isinstance(x, torch.Tensor) for x in x_seq):
+                x_seq = torch.stack(x_seq, dim=0)
+            else:
+                x_seq = [torch.stack(x, dim=0) if isinstance(x, list) else x for x in x_seq]
+                x_seq = torch.stack(x_seq, dim=0)
+        if mask_seq is not None and isinstance(mask_seq, list):
+            if all(isinstance(m, torch.Tensor) for m in mask_seq):
+                mask_seq = torch.stack(mask_seq, dim=0)
+            else:
+                mask_seq = [torch.stack(m, dim=0) if isinstance(m, list) else m for m in mask_seq]
+                mask_seq = torch.stack(mask_seq, dim=0)
+
+        if x_seq.dim() == 3:
+            x_seq = x_seq.unsqueeze(0)
+        if mask_seq is not None and mask_seq.dim() == 3:
+            mask_seq = mask_seq.unsqueeze(0)
+
+        B, T, N, F_ = x_seq.shape
+
+        dtype = next(self.parameters()).dtype
+        x_seq = x_seq.to(dtype)
+        if mask_seq is not None:
+            mask_seq = mask_seq.to(dtype)
         # 1. Projecció feature
         h = self.input_proj(x_seq)   # [B, T, N, H]
         # 2. CNN temporal per captar dependències llargues/curtes
@@ -600,8 +638,9 @@ class MeteoGraphPC_v3(nn.Module):
                 for b in range(B):
                     # GCN
                     g = F.relu(gcn(ht[b], edge_index_seq[t]))
-                    # Atenció espacial
-                    g = attn(g, edge_index_seq[t], edge_attr_seq[t])
+                    # Atenció espacial: força dtype compatible
+                    edge_attr = edge_attr_seq[t].to(g.dtype)
+                    g = attn(g, edge_index_seq[t], edge_attr)
                     h_g.append(g)
                 ht = torch.stack(h_g, dim=0)
                 ht = self.dropout(ht)
@@ -616,27 +655,36 @@ class MeteoGraphPC_v3(nn.Module):
         return y_pred
 
 # ───────────────────────────────── ENTRENAMENT ────────────────────────────────
-def split(ds): 
+def split(ds):
     """
-    Cal modificar aquesta funció si es treballa experimentalment amb molt poques de només un any en concret. 
-    La partició cronològica actual és la següent:
-      - train  → seqüències amb any d'inici ≤ 2022
-      - val    → seqüències amb any d'inici == 2023
-      - test   → seqüències amb any d'inici == 2024
+    Partició cronològica estricta segons l'any del PRIMER pas de predicció:
+      - train  → seqüències on el PRIMER pas de target (horitzó) és ≤ 2022
+      - val    → seqüències on el PRIMER pas de target és 2023
+      - test   → seqüències on el PRIMER pas de target és 2024
+
+    Això es pot deduir agafant el timestamp del PRIMER horitzó (end_str+1h).
     """
+    from datetime import datetime, timedelta
+
     train_idx, val_idx, test_idx = [], [], []
     for i, fname in enumerate(ds.filenames):
-        start_str = fname.split('_')[0]
-        year = int(start_str[:4])
-        if year <= 2022:
+        # Exemple fname: "2023123000_2023123123.pt"
+        start_str, end_str = fname.replace('.pt','').split('_')
+        # El primer target serà end_str + 1 hora (perquè la finestra acaba aquí)
+        target_dt = datetime.strptime(end_str, "%Y%m%d%H") + timedelta(hours=1)
+        target_year = target_dt.year
+
+        if target_year <= 2022:
             train_idx.append(i)
-        elif year == 2023:
+        elif target_year == 2023:
             val_idx.append(i)
-        elif year == 2024:
+        elif target_year == 2024:
             test_idx.append(i)
         else:
-            raise ValueError(f"Avis: seqüència inesperada amb any {year} → {fname}")
+            raise ValueError(f"Avis: target any inesperat {target_year} → {fname}")
+
     return Subset(ds, train_idx), Subset(ds, val_idx), Subset(ds, test_idx)
+
 
 class MeteoGraphPC_v4(nn.Module):
     """
@@ -747,87 +795,95 @@ def run(loader, model, crit, dev, opt, scheduler, mu, sigma, scaler, desc, args)
     sum_loss = 0.0
     ys_true, ys_pred = [], []
 
-    # ⇒ Context per entrenament vs. validació
+    # Context per entrenament vs. avaluació
     ctx = nullcontext() if train else torch.no_grad()
-    # ⇒ Usar AMP en tots dos casos per eficàcia
+    # Usar AMP en tots dos casos per eficiència
     with ctx, autocast("cuda"):
-        for xs_b, eis_b, ea_b, masks_b, ids_b, y_b in tqdm(loader, desc=desc, leave=False, file=sys.stdout, disable=False):
-            # y_b: [batch, H, N, F_out]
+        for xs_b, eis_b, ea_b, masks_b, ids_b, y_b, y_masks_b in tqdm(
+            loader, desc=desc, leave=False, file=sys.stdout, disable=False
+        ):
+            # y_b: [batch, H, N, F_out], ja està normalitzat (data.y = data.x.clone())
             y_b = y_b.to(dev)
-            # normalitzem objectiu
-            y_norm = (y_b - mu) / sigma            # broadcasta correctament
-            # preds_norm: list de [H, N, F_out]
+
+            # No cal tornar a normalitzar: y_norm = y_b
+            y_norm = y_b
+
+            # Forward pass seqüència per seqüència
             preds_list = []
-            for xs_seq, ei_seq, ea_seq, mask_seq, ids_seq in zip(xs_b, eis_b, ea_b, masks_b, ids_b):
-                # portar tot a GPU/CPU
-                # portem a device
+            for xs_seq, ei_seq, ea_seq, mask_seq, ids_seq in zip(
+                xs_b, eis_b, ea_b, masks_b, ids_b
+            ):
+                # Portar a device
                 xs_seq = [x.to(dev) for x in xs_seq]
                 ei_seq = [ei.to(dev) for ei in ei_seq]
-                # edge attributes opcional
                 if args.use_edge_attr:
                     ea_seq_proc = [ea.to(dev) for ea in ea_seq]
                 else:
                     ea_seq_proc = [None] * len(ei_seq)
-                # mask opcional
                 if args.use_mask:
                     mask_seq_proc = [m.to(dev) for m in mask_seq]
                 else:
                     mask_seq_proc = [None] * len(ei_seq)
-                # cridem el model amb llistes sempre del mateix tamany
-                preds = model(xs_seq,
-                            ei_seq,
-                            ea_seq_proc,
-                            mask_seq_proc,
-                            ids_seq)
 
-                preds_list.append(preds)
+                # Predicció normalitzada
+                preds_norm_seq = model(
+                    xs_seq,
+                    ei_seq,
+                    ea_seq_proc,
+                    mask_seq_proc,
+                    ids_seq
+                )
+                preds_list.append(preds_norm_seq)
 
-            preds_norm = torch.stack(preds_list)   # [batch, H, N, F_out]
+            preds_norm = torch.stack(preds_list)  # [batch, H, N, F_out]
+
+            # Pèrdua en escala normalitzada
             loss = crit(preds_norm, y_norm)
 
             if train:
-                # Optimitzador només en entrenament
                 opt.zero_grad()
                 scaler.scale(loss).backward()
                 scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
                 scaler.step(opt)
-
                 scaler.update()
-
-                # Ajusta el learning rate si fas one-cycle
                 if args.lr_scheduler == "onecycle":
                     scheduler.step()
 
-            # mètriques en escala original
-            preds = preds_norm * sigma + mu
+            # Desnormalitza predictions i valors reals per a càlcul de mètriques
+            preds = preds_norm * sigma + mu           # [batch, H, N, F_out] en escala original
+            y_true_orig = y_b * sigma + mu            # [batch, H, N, F_out] en escala original
+
             sum_loss += loss.item()
-            # Emmagatzemar per càlcul global de R2 i MAPE
-            ys_true.append(y_b.detach().cpu().numpy())
+            ys_true.append(y_true_orig.detach().cpu().numpy())
             ys_pred.append(preds.detach().cpu().numpy())
 
+    # Nombre de batches
     n = len(loader)
-    # Concatena totes les mostres (batch, horitzó, nodes, features)
-    y_true = np.concatenate(ys_true, axis=0)   # [n_batches, H, N, F]
-    y_pred = np.concatenate(ys_pred, axis=0)   # [n_batches, H, N, F]
+
+    # Concatena totes les prediccions i valors reals
+    y_true = np.concatenate(ys_true, axis=0)  # [n_batches, H, N, F_out] en escala original
+    y_pred = np.concatenate(ys_pred, axis=0)  # [n_batches, H, N, F_out] en escala original
 
     # Aplana batch, temps i nodes en un sol eix de mostra
     batches, H, N, F = y_true.shape
     y_true = y_true.reshape(batches * H * N, F)
     y_pred = y_pred.reshape(batches * H * N, F)
 
+    # Càlcul de mètriques globals en escala original
     rmse_global = np.sqrt(mean_squared_error(y_true, y_pred))
-
     mae_global  = mean_absolute_error(y_true, y_pred)
     r2_global   = r2_score(y_true, y_pred)
-    denom = np.where(y_true == 0, STD_EPS, y_true)
-    mape_global = np.mean(np.abs((y_true - y_pred) / denom)) * 100
+    smape_global = np.mean(
+        2 * np.abs(y_pred - y_true) /
+        (np.abs(y_true) + np.abs(y_pred) + STD_EPS)
+    ) * 100
 
     # Retornem pèrdua mitjana i mètriques globals
-    return (sum_loss / n, rmse_global, mae_global, r2_global, mape_global)
+    return (sum_loss / n, rmse_global, mae_global, r2_global, smape_global)
 
 class EarlyStopper:
-    def __init__(self, patience=5, min_delta=1e-4):
+    def __init__(self, patience=10, min_delta=1e-4):
         self.patience = patience
         self.min_delta = min_delta
         self.best = float("inf")
@@ -856,8 +912,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_val, save_dir):
 
 # ───────────────────────────────── MAIN ───────────────────────────────────────
 def parse_args():
-    parser = argparse.ArgumentParser(description="Entrena models basats en xarxes neuronals en grafs sobre seqüències generades per generate_seq_v8.py")
-    parser.add_argument("--seq_dir", type=str, default="/fhome/nfarres/All_Sequences_v8_ws48_str6_hh6_CHUNK", help="Directori amb chunks de seqüències .pt generades")
+    parser = argparse.ArgumentParser(description="Entrena models basats en xarxes neuronals en grafs sobre seqüències generades per generate_seq.py")
+    parser.add_argument("--seq_dir", type=str, default=None, help="Directori amb chunks de seqüències .pt generades")
     parser.add_argument("--batch_size", type=int, default=8, help="Mida del batch per al DataLoader")
     parser.add_argument("--epochs", type=int, default=50, help="Nombre màxim d'èpoques")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate per l'optimitzador")
@@ -904,19 +960,50 @@ def main():
 
     set_seed(args.seed)
 
-    all_sequences_path = args.seq_dir  # Ara aquest argument serà el directori de chunks
+    all_sequences_path = args.seq_dir  # Aquest argument és el directori de chunks
     print(f"Carregant seqüències de {all_sequences_path}...")
-    ds = GraphSeqDataset(all_sequences_path, input_idx=args.input_indices, target_idx=args.target_indices)
+    ds = GraphSeqDataset(
+        all_sequences_path,
+        input_idx=args.input_indices,
+        target_idx=args.target_indices
+    )
 
     # Usarem partició cronològica fixa: 2016–2022 train, 2023 val, 2024 test
     tr_ds, vl_ds, te_ds = split(ds)
 
     num_workers = args.dl_num_workers
     print("Carregant DataLoaders...")
-    tr_dl = DataLoader(tr_ds, shuffle=False,  batch_size=args.batch_size, collate_fn=collate, num_workers=num_workers, pin_memory=True, persistent_workers=False, prefetch_factor=2)
-    vl_dl = DataLoader(vl_ds, shuffle=False, batch_size=args.batch_size, collate_fn=collate, num_workers=num_workers, pin_memory=True, persistent_workers=False, prefetch_factor=2)
-    te_dl = DataLoader(te_ds, shuffle=False, batch_size=args.batch_size, collate_fn=collate, num_workers=num_workers, pin_memory=True, persistent_workers=False, prefetch_factor=2)
-    
+    tr_dl = DataLoader(
+        tr_ds,
+        shuffle=False,
+        batch_size=args.batch_size,
+        collate_fn=collate,
+        num_workers=num_workers,
+        pin_memory=False,
+        persistent_workers=False,
+        prefetch_factor=2
+    )
+    vl_dl = DataLoader(
+        vl_ds,
+        shuffle=False,
+        batch_size=args.batch_size,
+        collate_fn=collate,
+        num_workers=num_workers,
+        pin_memory=False,
+        persistent_workers=False,
+        prefetch_factor=2
+    )
+    te_dl = DataLoader(
+        te_ds,
+        shuffle=False,
+        batch_size=args.batch_size,
+        collate_fn=collate,
+        num_workers=num_workers,
+        pin_memory=False,
+        persistent_workers=False,
+        prefetch_factor=2
+    )
+
     print("Mostra algunes seqüències de test:", [ds.filenames[i] for i in te_ds.indices[:5]])
 
     # 1) Calcula F_in i F_out d’entrada
@@ -925,19 +1012,18 @@ def main():
 
     # 2) Si has passat JSON, carrega mu/sigma directament
     if args.norm_json:
-        # Carrega i construeix mu/sigma des del JSON
         print(f"Carregant normalització de {args.norm_json}...")
         with open(args.norm_json, 'r') as f:
             norm = json.load(f)
-        # Llista ordenada de noms de features (ha de coincidir amb el JSON!)
         feature_names = [
             "Temp","Humitat","Pluja","VentFor","Patm",
             "Alt_norm","VentDir_sin","VentDir_cos",
             "hora_sin","hora_cos","dia_sin","dia_cos",
             "cos_sza","DewPoint","PotentialTemp","Vent_u","Vent_v"
         ]
-        means = [norm[n]["mean"] for n in feature_names]
-        stds  = [norm[n]["std"]  for n in feature_names]
+        target_names = [feature_names[i] for i in args.target_indices]
+        means = [norm[n]["mean"] for n in target_names]
+        stds  = [norm[n]["std"]  for n in target_names]
         mu    = torch.tensor(means, device=args.device).unsqueeze(0)
         sigma = torch.tensor(stds,  device=args.device).unsqueeze(0)
         assert mu.shape[1] == F_out, (
@@ -945,7 +1031,6 @@ def main():
             f"esperava {F_out}."
         )
         print(f"Normalització carregada de {args.norm_json}")
-
     else:
         print("iniciant get_target_stats…")
         mu, sigma = get_target_stats(tr_dl, args.device)
@@ -953,35 +1038,58 @@ def main():
         mu, sigma = mu.to(args.device), sigma.to(args.device)
 
     # Inferim horizon a partir del primer .pt de seq_dir
-    # Troba a quin chunk i posició està la primera seqüència
     chunk_idx, seq_idx = ds.indices[0]
     sample = torch.load(ds.chunk_files[chunk_idx], map_location="cpu")["sequences"][seq_idx]
+    H = len(sample["y_seq"])  # nombre de passos futurs
 
-
-    H = len(sample["y_seq"]) # nombre de passos futurs creats
-
-
+    # Instantiem el model
     if args.model == "MeteoGraphPC_v1":
-        print ("Creant MeteoGraphPC_v1...")
-        model = MeteoGraphPC_v1(in_channels=F_in, hidden=args.hidden_dim, out_channels=F_out, horizon=H).to(args.device)
-        print ("MeteoGraphPC_v1 creat")
+        print("Creant MeteoGraphPC_v1...")
+        model = MeteoGraphPC_v1(
+            in_channels=F_in,
+            hidden=args.hidden_dim,
+            out_channels=F_out,
+            horizon=H,
+            target_indices=args.target_indices
+        ).to(args.device)
+        print("MeteoGraphPC_v1 creat")
     elif args.model == "MeteoGraphPC_v2":
-        print ("Creant MeteoGraphPC_v2...")
-        model = MeteoGraphPC_v2( in_channels=F_in, hidden=args.hidden_dim, out_channels=F_out, horizon=H).to(args.device)
-        print ("MeteoGraphPC_v2 creat")
+        print("Creant MeteoGraphPC_v2...")
+        model = MeteoGraphPC_v2(
+            in_channels=F_in,
+            hidden=args.hidden_dim,
+            out_channels=F_out,
+            horizon=H
+        ).to(args.device)
+        print("MeteoGraphPC_v2 creat")
     elif args.model == "MeteoGraphPC_v3":
-        print ("Creant MeteoGraphPC_v3...")
-        model = MeteoGraphPC_v3(n_feat=F_in, n_edge_feat=15, n_targets=F_out, hidden_dim=args.hidden_dim, num_layers=3, tcn_layers=4, heads=4, dropout=0.1).to(args.device)
-        print ("MeteoGraphPC_v3 creat")
+        print("Creant MeteoGraphPC_v3...")
+        model = MeteoGraphPC_v3(
+            n_feat=F_in,
+            n_edge_feat=15,
+            n_targets=F_out,
+            hidden_dim=args.hidden_dim,
+            num_layers=3,
+            tcn_layers=4,
+            heads=4,
+            dropout=0.1
+        ).to(args.device)
+        print("MeteoGraphPC_v3 creat")
     elif args.model == "MeteoGraphPC_v4":
-        print ("Creant MeteoGraphPC_v4...")
-        model = MeteoGraphPC_v4(n_feat=F_in, n_edge_feat=15, n_targets=F_out, hidden_dim=args.hidden_dim, num_gat_layers=2, t_transformer_layers=2, n_heads=4, dropout=0.1).to(args.device)
-        print ("MeteoGraphPC_v4 creat")
+        print("Creant MeteoGraphPC_v4...")
+        model = MeteoGraphPC_v4(
+            n_feat=F_in,
+            n_edge_feat=15,
+            n_targets=F_out,
+            hidden_dim=args.hidden_dim,
+            num_gat_layers=2,
+            t_transformer_layers=2,
+            n_heads=4,
+            dropout=0.1
+        ).to(args.device)
+        print("MeteoGraphPC_v4 creat")
     else:
         raise ValueError(f"Model desconegut: {args.model}")
-
-    #if torch.cuda.device_count() > 1:
-    #    model = GeoDataParallel(model)
 
     print(f"Model creat amb {sum(p.numel() for p in model.parameters() if p.requires_grad):,} paràmetres entrenables.")
     print("Optimitzador escollit: Adam")
@@ -991,12 +1099,27 @@ def main():
 
     if args.lr_scheduler == "plateau":
         print("Scheduler escollit: ReduceLROnPlateau")
-        scheduler = ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=args.patience, min_lr=1e-6)
+        scheduler = ReduceLROnPlateau(
+            opt,
+            mode='min',
+            factor=0.5,
+            patience=args.patience,
+            min_lr=1e-6
+        )
     elif args.lr_scheduler == "onecycle":
         print("Scheduler escollit: OneCycleLR")
-        scheduler = OneCycleLR(opt, max_lr=args.lr, steps_per_epoch=len(tr_dl), epochs=args.epochs, pct_start=0.5, div_factor=50.0, final_div_factor=1000, anneal_strategy='cos')
+        scheduler = OneCycleLR(
+            opt,
+            max_lr=args.lr,
+            steps_per_epoch=len(tr_dl),
+            epochs=args.epochs,
+            pct_start=0.3,
+            div_factor=10.0,
+            final_div_factor=20,
+            anneal_strategy='cos'
+        )
 
-    crit  = nn.MSELoss()
+    crit = nn.MSELoss()
     stopper = EarlyStopper(args.patience, args.min_delta)
 
     # Preparar fitxer de log
@@ -1024,34 +1147,42 @@ def main():
             "test_size", len(te_ds)
         ])
         # 4) Capçalera de les mètriques per època
-        w.writerow(["epoch", "stage", "loss", "RMSE", "MAE", "R2", "MAPE"])
+        w.writerow(["epoch", "stage", "loss", "RMSE", "MAE", "R2", "SMAPE"])
 
     print("Iniciant entrenament (pot trigar hores)...")
 
-    for epoch in range(1, args.epochs+1):
+    # Entrenament i validació per èpoques
+    for epoch in range(1, args.epochs + 1):
         print(f"\n\n=== Època {epoch}/{args.epochs} ===")
-        tr_loss, tr_rmse, tr_mae, tr_r2, tr_mape = run(tr_dl, model, crit, args.device, opt, scheduler, mu, sigma, scaler, desc=f"[{epoch}/{args.epochs}] Train", args=args)
-        vl_loss, vl_rmse, vl_mae, vl_r2, vl_mape = run(vl_dl, model, crit, args.device, None, scheduler, mu, sigma, scaler, desc=f"[{epoch}/{args.epochs}] Val ", args=args)
-        
+        tr_loss, tr_rmse, tr_mae, tr_r2, tr_smape = run(
+            tr_dl, model, crit, args.device, opt, scheduler, mu, sigma, scaler,
+            desc=f"[{epoch}/{args.epochs}] Train", args=args
+        )
+        vl_loss, vl_rmse, vl_mae, vl_r2, vl_smape = run(
+            vl_dl, model, crit, args.device, None, scheduler, mu, sigma, scaler,
+            desc=f"[{epoch}/{args.epochs}] Val  ", args=args
+        )
+
         if args.lr_scheduler == "plateau":
             scheduler.step(vl_loss)
 
         current_lr = scheduler.get_last_lr()[0]
         print(f"[Epoch {epoch:2d}] Current LR: {current_lr:.2e}")
 
-        print(f"Època {epoch:3d} | "
-                f"Train  (loss {tr_loss:.4f}, RMSE {tr_rmse:.4f}, MAE {tr_mae:.4f}) · "
-                f"Val  (loss {vl_loss:.4f}, RMSE {vl_rmse:.4f}, MAE {vl_mae:.4f})")
+        print(
+            f"Època {epoch:3d} | "
+            f"Train  (loss {tr_loss:.4f}, RMSE {tr_rmse:.4f}, MAE {tr_mae:.4f}) · "
+            f"Val    (loss {vl_loss:.4f}, RMSE {vl_rmse:.4f}, MAE {vl_mae:.4f})"
+        )
 
         # Guardem train i val amb tots els indicadors
         with open(args.log_csv, "a", newline="") as f:
             w = csv.writer(f)
-            w.writerow([epoch, "train", tr_loss, tr_rmse, tr_mae, tr_r2,  tr_mape])
-            w.writerow([epoch, "val",   vl_loss, vl_rmse, vl_mae,   vl_r2,  vl_mape])
+            w.writerow([epoch, "train", tr_loss, tr_rmse, tr_mae, tr_r2,  tr_smape])
+            w.writerow([epoch, "val",   vl_loss, vl_rmse, vl_mae,   vl_r2,  vl_smape])
 
-        # guardar millor model segons RMSE de validació desnormalitzada
+        # Guardar millor model segons RMSE de validació en escala original
         if vl_rmse < stopper.best - args.min_delta:
-            # fem servir el helper per desar tot el checkpoint (model, opt, sched, epoch, best_val)
             best_ckpt_path = save_checkpoint(
                 model, opt, scheduler, epoch, vl_rmse, args.save_dir
             )
@@ -1060,15 +1191,14 @@ def main():
         if stopper.step(vl_rmse):
             print(f"Early stopping (sense millora {args.patience} èpoques).")
             break
-        
-        # Esborrem la memòria GPU per evitar errors de memòria
+
+        # Neteja memòria GPU per evitar errors
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            #print(torch.cuda.memory_summary(device=0, abbreviated=True))
 
     print("Entrenament acabat.")
     print("Carregant millor model guardat...")
-    # 1) Carrega el millor model guardat
+    # Carrega el millor model guardat
     checkpoint = torch.load(best_ckpt_path, map_location=args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(args.device)
@@ -1076,18 +1206,21 @@ def main():
     print("Model carregat.")
 
     print("Iniciant test...")
-    # 2) Avaluació completa
+    # Preparar llistes per acumular prediccions i valors reals
     ys_true, ys_pred = [], []
     ys_persist, ys_climat = [], []
 
     with torch.no_grad():
-        for xs_b, eis_b, ea_b, masks_b, ids_b, y_b in te_dl:
+        for xs_b, eis_b, ea_b, masks_b, ids_b, y_b, y_masks_b in te_dl:
+            # y_b: [B, H, N, F_out], ja està normalitzat
             y_b = y_b.to(args.device)
+
             preds_list = []
-            for xs_seq, ei_seq, ea_seq, mask_seq, ids_seq in zip(xs_b, eis_b, ea_b, masks_b, ids_b):
-                # 1) portem tot a device
-                xs_seq   = [x.to(args.device)   for x in xs_seq]
-                ei_seq   = [ei.to(args.device)  for ei in ei_seq]
+            for xs_seq, ei_seq, ea_seq, mask_seq, ids_seq in zip(
+                xs_b, eis_b, ea_b, masks_b, ids_b
+            ):
+                xs_seq = [x.to(args.device) for x in xs_seq]
+                ei_seq = [ei.to(args.device) for ei in ei_seq]
                 if args.use_edge_attr:
                     ea_seq_proc = [ea.to(args.device) for ea in ea_seq]
                 else:
@@ -1098,108 +1231,192 @@ def main():
                 else:
                     mask_seq_proc = [None] * len(ei_seq)
 
-                preds = model(xs_seq,
-                            ei_seq,
-                            ea_seq_proc,
-                            mask_seq_proc,
-                            ids_seq)
+                preds_norm_seq = model(
+                    xs_seq,
+                    ei_seq,
+                    ea_seq_proc,
+                    mask_seq_proc,
+                    ids_seq
+                )
+                preds_list.append(preds_norm_seq)
 
-                preds_list.append(preds)
-                
-            preds = torch.stack(preds_list) * sigma + mu
-            ys_true.append(y_b.cpu().numpy())
-            ys_pred.append(preds.cpu().numpy())
+            preds_norm = torch.stack(preds_list)  # [B, H, N, F_out]
+            preds = preds_norm * sigma + mu       # escala original
+            y_true_orig = y_b * sigma + mu        # escala original
 
-            # -- Baseline persistència i climatologia per a cada mostra del batch --
-            for seq_x, y_true in zip(xs_b, y_b.cpu()):
-                # — Persistència per node: l’últim estat tal qual —
-                persist_pred = seq_x[-1].cpu().numpy()               # ara [N, F]
+            # Empilt la màscara de valors futurs (y_masks_b)
+            masks_tensor = torch.stack([
+                y_mask_seq if isinstance(y_mask_seq, torch.Tensor)
+                else torch.stack(y_mask_seq, dim=0)
+                for y_mask_seq in y_masks_b
+            ], dim=0)                 # [B, H, N]
+            masks_np = masks_tensor.numpy()
+            preds_np = preds.cpu().numpy()
+            y_true_np = y_true_orig.cpu().numpy()
+            masks_expanded = np.repeat(
+                masks_np[..., None], preds_np.shape[-1], axis=-1
+            )                          # [B, H, N, F]
+
+            # Apliquem la màscara (posar NaN on no val)
+            preds_np[~masks_expanded] = np.nan
+            y_true_np[~masks_expanded] = np.nan
+
+            ys_true.append(y_true_np)
+            ys_pred.append(preds_np)
+
+            # Baseline persistència i climatologia per a cada mostra del batch
+            for seq_x, y_true_seq in zip(xs_b, y_b.cpu()):
+                # Persistència: últim timestamp real (a escala original)
+                y_true_seq_orig = (y_true_seq.to(args.device) * sigma + mu).cpu().numpy()
+                persist_pred = y_true_seq_orig[0]  # [N, F_out] en escala original
                 ys_persist.append(persist_pred)
-                
-                # — Climatologia per node: repliquem la mitjana global —
-                mu_np = mu.cpu().numpy()                        # [F]
-                N_nodes = persist_pred.shape[0]
-                climat_pred = np.tile(mu_np[None, :], (N_nodes, 1))  # [N, F]
-                ys_climat.append(climat_pred)
 
+                # Climatologia: mitjana global (escala original)
+                mu_np = mu.cpu().numpy().squeeze(0)         # ara (F_out,)
+                N_nodes = persist_pred.shape[0]
+                climat_pred = np.tile(mu_np[None, :], (N_nodes, 1))   # [N_nodes, F_out]
+                ys_climat.append(climat_pred)
 
     # ——————————— CONCATA I PREPARA PER TEST FINAL ———————————
 
-    # 1) Concatena totes les seqüències de test    
-    ys_true = np.concatenate(ys_true, axis=0)   # → [S, H, N, F]
-    ys_pred = np.concatenate(ys_pred, axis=0)   # → [S, H, N, F]
-
-    # Extreu dimensions
+    ys_true = np.concatenate(ys_true, axis=0)   # [S, H, N, F]
+    ys_pred = np.concatenate(ys_pred, axis=0)   # [S, H, N, F]
     S, H, N, F = ys_true.shape
     mu_np = mu.cpu().numpy()
 
-    # ← Guardo prediccions i valors reals per a anàlisi posterior
+    # Desa per a anàlisi posterior (opcional)
     os.makedirs(args.save_dir, exist_ok=True)
     np.save(os.path.join(args.save_dir, "y_true_test.npy"), ys_true)
     np.save(os.path.join(args.save_dir, "y_pred_test.npy"), ys_pred)
 
-    # 2) Concatena els baselines originals (un sol pas)  
-    ys_persist = np.stack(ys_persist, axis=0)   # → [S, N, F]
-
-    # 4) Replica cada baseline per a tots els H passos de l’horitzó  
+    # Baseline persistència: apilar i replicar per cada pas d’horitzó
+    ys_persist = np.stack(ys_persist, axis=0)   # [S, N, F]
     persist_np = np.stack([
-        np.repeat(p[None, ...], H, axis=0)       # de [N, F] → [H, N, F]
+        np.repeat(p[None, ...], H, axis=0)       # [N, F] → [H, N, F]
         for p in ys_persist
-    ], axis=0)                                  # → [S, H, N, F]
-
+    ], axis=0)                                  # [S, H, N, F]
     print("persist_np.shape =", persist_np.shape)
 
-    # Aplanem tota la primera dimensió (seqüències × temps × nodes)
-    y_true_flat  = ys_true.reshape(-1, ys_true.shape[-1])
-    y_pred_flat  = ys_pred.reshape(-1, ys_pred.shape[-1])
+    # Aplanejar per càlcul de mètriques
+    y_true_flat  = ys_true.reshape(-1, ys_true.shape[-1])    # en escala original
+    y_pred_flat  = ys_pred.reshape(-1, ys_pred.shape[-1])    # en escala original
     persist_flat = persist_np.reshape(-1, persist_np.shape[-1])
-    # Aplanem les dues primeres dimensions i calculem mitjana per feature:
-    mu_feat = mu_np.reshape(-1, mu_np.shape[-1]).mean(axis=0)  # shape (F,)
-    # 3) Climatologia: repeteixo mu_np una fila per cada mostra de y_true_flat
+
+    # Climatologia: replicar mu_np per cada mostra
+    mu_feat = mu_np.squeeze(0)        # ara (F_out,)
     climat_flat = np.repeat(mu_feat[None, :], y_true_flat.shape[0], axis=0)
 
-    # 6) Calcula les mètriques  
+    # Filtra files amb NaN
+    mask_valid = ~np.isnan(y_true_flat).any(axis=1)
+    y_true_flat   = y_true_flat[mask_valid]
+    y_pred_flat   = y_pred_flat[mask_valid]
+    persist_flat  = persist_flat[mask_valid]
+    climat_flat   = climat_flat[mask_valid]
+    print(f"Mostres vàlides per avaluació: {mask_valid.sum()} de {mask_valid.size}")
+
+    # Càlcul de mètriques per baseline
     rmse_persist = np.sqrt(mean_squared_error(y_true_flat, persist_flat))
-    mae_persist  = mean_absolute_error   (y_true_flat, persist_flat)
-    r2_persist   = r2_score              (y_true_flat, persist_flat)
-    denom        = np.where(y_true_flat == 0, STD_EPS, y_true_flat)
-    mape_persist = np.mean(np.abs((y_true_flat - persist_flat) / denom)) * 100
+    mae_persist  = mean_absolute_error(y_true_flat, persist_flat)
+    r2_persist   = r2_score(y_true_flat, persist_flat)
+    smape_persist = np.mean(
+        2 * np.abs(persist_flat - y_true_flat) /
+        (np.abs(y_true_flat) + np.abs(persist_flat) + STD_EPS)
+    ) * 100
 
     rmse_clima   = np.sqrt(mean_squared_error(y_true_flat, climat_flat))
-    mae_clima    = mean_absolute_error   (y_true_flat, climat_flat)
-    r2_clima     = r2_score              (y_true_flat, climat_flat)
-    mape_clima   = np.mean(np.abs((y_true_flat - climat_flat) / denom)) * 100
+    mae_clima    = mean_absolute_error(y_true_flat, climat_flat)
+    r2_clima     = r2_score(y_true_flat, climat_flat)
+    smape_clima = np.mean(
+        2 * np.abs(climat_flat - y_true_flat) /
+        (np.abs(y_true_flat) + np.abs(climat_flat) + STD_EPS)
+    ) * 100
 
+    # Càlcul de mètriques globals del model
     rmse         = np.sqrt(mean_squared_error(y_true_flat, y_pred_flat))
-    mae          = mean_absolute_error   (y_true_flat, y_pred_flat)
-    r2           = r2_score              (y_true_flat, y_pred_flat)
-    mape         = np.mean(np.abs((y_true_flat - y_pred_flat) / denom)) * 100
+    mae          = mean_absolute_error(y_true_flat, y_pred_flat)
+    r2           = r2_score(y_true_flat, y_pred_flat)
+    smape = np.mean(
+        2 * np.abs(y_pred_flat - y_true_flat) /
+        (np.abs(y_true_flat) + np.abs(y_pred_flat) + STD_EPS)
+    ) * 100
 
-    # 7) Escriu al CSV i printeja per pantalla  
+    # Escriu al CSV i mostra per pantalla
     with open(args.log_csv, "a", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["", "test",         "", rmse,        mae,        r2,        mape])
-        w.writerow(["", "persistència", "", rmse_persist, mae_persist, r2_persist, mape_persist])
-        w.writerow(["", "climatologia",  "", rmse_clima,   mae_clima,   r2_clima,   mape_clima])
+        w.writerow(["", "test",         "", rmse,        mae,        r2,        smape])
+        w.writerow([
+            "", "persistència", "", rmse_persist, mae_persist, r2_persist, smape_persist
+        ])
+        w.writerow([
+            "", "climatologia",  "", rmse_clima,   mae_clima,   r2_clima,   smape_clima
+        ])
 
-    print(f"Metriques del test ->       RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, MAPE: {mape:.2f}%")
+    print(f"Metriques del test ->       RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, SMAPE: {smape:.2f}%")
     print(
         f"Baseline persistència -> "
         f"RMSE: {rmse_persist:.4f}, "
         f"MAE: {mae_persist:.4f}, "
         f"R²: {r2_persist:.4f}, "
-        f"MAPE: {mape_persist:.2f}%"
+        f"SMAPE: {smape_persist:.2f}%"
     )
     print(
         f"Baseline climatologia  -> "
         f"RMSE: {rmse_clima:.4f}, "
         f"MAE: {mae_clima:.4f}, "
         f"R²: {r2_clima:.4f}, "
-        f"MAPE: {mape_clima:.2f}%"
+        f"SMAPE: {smape_clima:.2f}%"
     )
+
+    # Mètriques detallades per variable
+    print("\nMètriques detallades per variable:")
+    feature_names = [
+        "Temp", "Humitat", "Pluja", "VentFor", "Patm",
+        "Alt_norm", "VentDir_sin", "VentDir_cos",
+        "hora_sin", "hora_cos", "dia_sin", "dia_cos",
+        "cos_sza", "DewPoint", "PotentialTemp", "Vent_u", "Vent_v"
+    ]
+    target_indices = args.target_indices if args.target_indices else range(len(feature_names))
+    selected_names = [feature_names[i] for i in target_indices]
+
+    with open(args.log_csv, "a", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([])
+        w.writerow(["Mètriques detallades per variable"])
+        w.writerow([
+            "Variable", "RMSE_model", "MAE_model", "R2_model", "SMAPE_model",
+            "RMSE_persist", "RMSE_clima"
+        ])
+        for i, name in enumerate(selected_names):
+            y_true_v = y_true_flat[:, i]
+            y_pred_v = y_pred_flat[:, i]
+            persist_v = persist_flat[:, i]
+            climat_v = climat_flat[:, i]
+            valid_idx = ~np.isnan(y_true_v)
+            y_true_v   = y_true_v[valid_idx]
+            y_pred_v   = y_pred_v[valid_idx]
+            persist_v  = persist_v[valid_idx]
+            climat_v   = climat_v[valid_idx]
+            rmse_v = np.sqrt(mean_squared_error(y_true_v, y_pred_v))
+            mae_v  = mean_absolute_error(y_true_v, y_pred_v)
+            r2_v   = r2_score(y_true_v, y_pred_v)
+            smape_v = np.mean(
+                2 * np.abs(y_pred_v - y_true_v) /
+                (np.abs(y_true_v) + np.abs(y_pred_v) + STD_EPS)
+            ) * 100
+            rmse_persist_v = np.sqrt(mean_squared_error(y_true_v, persist_v))
+            rmse_climat_v  = np.sqrt(mean_squared_error(y_true_v, climat_v))
+            print(
+                f"{name:>12}:  RMSE={rmse_v:.4f}  MAE={mae_v:.4f}  R2={r2_v:.4f}  SMAPE={smape_v:.2f}%"
+                f"   |  Persist: {rmse_persist_v:.4f}  Clima: {rmse_climat_v:.4f}"
+            )
+            w.writerow([
+                name, rmse_v, mae_v, r2_v, smape_v,
+                rmse_persist_v, rmse_climat_v
+            ])
 
     print(f"Entrenament i test acabats! Millor val_RMSE = {stopper.best:.4f}")
     print(f"Log complet al fitxer «{args.log_csv}».")
+
 
 if __name__ == "__main__":
     main()
