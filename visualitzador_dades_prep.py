@@ -44,7 +44,7 @@ df = pd.read_csv(file_path)
 
 # Crear el nom de la carpeta a partir del nom del fitxer
 nom_base = os.path.splitext(os.path.basename(file_path))[0]
-carpeta_sortida = f"visualitzacio_{nom_base}"
+carpeta_sortida = f"visualitzacio_dadesreals_{nom_base}"
 os.makedirs(carpeta_sortida, exist_ok=True)
 
 # ----------- MAPA DE LES ESTACIONS ----------- #
