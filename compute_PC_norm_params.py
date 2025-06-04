@@ -229,8 +229,6 @@ for file in tqdm(all_files, desc="Processant fitxers"):
     try:
         df = pd.read_csv(file)
 
-        df = pd.read_csv(file)
-
         # Converteix la columna 'VentFor' a numèrica (si encara no ho és) i aplica la conversió a m/s
         df['VentFor'] = pd.to_numeric(df['VentFor'], errors='coerce').fillna(0) / 3.6
 
