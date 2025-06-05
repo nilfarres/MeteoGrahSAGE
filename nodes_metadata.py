@@ -1,3 +1,22 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+==============================================================================
+nodes_metadata.py
+
+Script per generar el fitxer "nodes_metadata.csv" amb latitud, longitud i altitud de
+cada node a partir dels fitxers ".pt" creats per toData.py.
+
+FUNCIONALITATS PRINCIPALS:
+  - Aplega la unió global d'identificadors de node dels fitxers de dades.
+  - Converteix les posicions cartesianes a coordenades geodèsiques.
+  - Desa les coordenades en un CSV reutilitzable per altres scripts.
+
+AUTOR: Nil Farrés Soler
+==============================================================================
+"""
+
 import torch
 import pandas as pd
 import glob
