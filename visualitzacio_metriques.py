@@ -1,3 +1,23 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+==============================================================================
+visualitzacio_metriques.py
+
+Script per visualitzar i resumir les mètriques d'entrenament de MeteoGraphPC
+a partir d'un fitxer CSV.
+
+FUNCIONALITATS PRINCIPALS:
+  - Llegeix el CSV i prepara els conjunts train/val/test.
+  - Genera la matriu de correlació i gràfics evolutius de cada mètrica.
+  - Calcula diferències i boxplots per trams d'època.
+  - Exporta una taula resum en formats CSV, Markdown i LaTeX.
+
+AUTOR: Nil Farrés Soler
+==============================================================================
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
