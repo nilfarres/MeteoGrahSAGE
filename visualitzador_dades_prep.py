@@ -34,126 +34,213 @@ AUTOR: Nil Farrés Soler
 """
 
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 import os
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.colors as mcolors
 
 # ----------- PARÀMETRES ----------- #
-file_path = "2016010100dadesPC_utc.csv"  # Substitueix pel fitxer que vulguis visualitzar
+file_path = "2024042900dadesPC_utc.csv"  # Substitueix pel fitxer que vulguis visualitzar
 df = pd.read_csv(file_path)
-
-# Crear el nom de la carpeta a partir del nom del fitxer
 nom_base = os.path.splitext(os.path.basename(file_path))[0]
 carpeta_sortida = f"visualitzacio_dadesreals_{nom_base}"
 os.makedirs(carpeta_sortida, exist_ok=True)
 
+# ----------- COLORMAPS PERSONALITZATS ----------- #
+cmap_temp = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoTemp",
+    [
+        (0.00, "#0033A0"), # blau fosc (molt fred)
+        (0.22, "#339FFF"), # blau clar (fred)
+        (0.40, "#A7F797"), # verd clar (temperatura suau, ~15-18°C)
+        (0.55, "#F7F797"), # groc pàl·lid (suau/càlid, ~22-25°C)
+        (0.70, "#FF8C00"), # taronja (càlid, ~30°C)
+        (0.88, "#FF1E00"), # vermell (molt càlid)
+        (1.00, "#A70000"), # granate (extrem)
+    ]
+)
+cmap_pluja = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoPluja",
+    [
+        (0.00, "#B2D2F1"),
+        (0.15, "#88BFFD"),
+        (0.20, "#5C9BE7"),
+        (0.30, "#2A94EB"),
+        (0.40, "#007CC4"),
+        (0.60, "#004A8B"),
+        (0.85, "#002050"),
+        (1.00, "#4B0469"),
+    ]
+)
+
+cmap_humitat = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoHumitat",
+    [
+        (0.00, "#F7FCF5"),
+        (0.20, "#D9F0A3"),
+        (0.40, "#A1D99B"),
+        (0.65, "#41AB5D"),
+        (0.85, "#238B45"),
+        (1.00, "#00441B"),
+    ]
+)
+cmap_patm = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoPatm",
+    [
+        (0.00, "#4A90E2"),
+        (0.40, "#A7F797"),
+        (1.00, "#BD10E0"),
+    ]
+)
+cmap_ventfor = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoVentFor",
+    [
+        (0.00, "#E0D7FF"),
+        (0.35, "#A984E8"),
+        (0.70, "#613DC1"),
+        (1.00, "#190A33"),
+    ]
+)
+cmap_alt = "viridis"
+
+# ----------- FUNCIONS D’ESTÈTICA CARTOGRÀFICA ----------- #
+def mapa_base(ax, lons, lats, margin=0.1):
+    ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="white", zorder=0)
+    ax.add_feature(cfeature.OCEAN.with_scale("10m"), facecolor="white", zorder=0)
+    ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.8, edgecolor="black")
+    ax.add_feature(cfeature.BORDERS.with_scale("10m"), linewidth=0.6, edgecolor="gray")
+    ax.add_feature(cfeature.RIVERS.with_scale("10m"), linewidth=0.5, edgecolor="blue", alpha=0.5)
+    ax.add_feature(cfeature.LAKES.with_scale("10m"), facecolor="lightblue", alpha=0.5)
+    ax.add_feature(cfeature.STATES.with_scale("10m"), linewidth=0.5, edgecolor="gray", linestyle=":")
+    
+    ax.set_extent([
+        np.nanmin(lons) - margin, np.nanmax(lons) + margin,
+        np.nanmin(lats) - margin, np.nanmax(lats) + margin
+    ], crs=ccrs.PlateCarree())
+
+def etiqueta_minmax(ax, vals, unitat):
+    min_val = np.nanmin(vals)
+    max_val = np.nanmax(vals)
+    ax.text(
+        0.99, 0.01,
+        f"Min: {min_val:.2f} · Max: {max_val:.2f}\nDades reals · TFG Nil Farrés",
+        transform=ax.transAxes,
+        ha="right", va="bottom", fontsize=9, color="gray",
+        bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1)
+    )
+
+def plot_scatter_cartopy(lons, lats, vals, cmap, titol, unitat, outpath, vmin, vmax):
+    fig = plt.figure(figsize=(10, 8), dpi=300, facecolor="white")
+    ax = plt.axes(projection=ccrs.PlateCarree(), facecolor="white")
+    mapa_base(ax, lons, lats)
+
+    mask_valid = ~np.isnan(vals)
+    mask_zero = (vals == 0) & mask_valid
+    mask_nozero = (vals != 0) & mask_valid
+
+    # Primer pinta els zeros de blanc
+    ax.scatter(
+        lons[mask_zero], lats[mask_zero], c="#FFFFFF",
+        edgecolor="k", linewidth=0.4, s=50, alpha=0.92,
+        transform=ccrs.PlateCarree(), zorder=3, label="0 mm"
+    )
+    # Ara pinta la resta de punts (no zeros) amb el colormap normal
+    sc = ax.scatter(
+        lons[mask_nozero], lats[mask_nozero], c=vals[mask_nozero],
+        cmap=cmap, edgecolor="k", linewidth=0.4, s=50, alpha=0.92,
+        transform=ccrs.PlateCarree(), zorder=4, vmin=vmin, vmax=vmax
+    )
+
+    cbar = plt.colorbar(sc, ax=ax, orientation="vertical", pad=0.02, shrink=0.8)
+    cbar.set_label(unitat, fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
+    ax.set_title(titol, fontsize=14, fontweight='bold', pad=20)
+    ax.set_xlabel("Longitude (°)", fontsize=12)
+    ax.set_ylabel("Latitude (°)", fontsize=12)
+    ax.tick_params(labelsize=10)
+    etiqueta_minmax(ax, vals, unitat)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=300)
+    plt.close(fig)
+
+
 # ----------- MAPA DE LES ESTACIONS ----------- #
-plt.figure(figsize=(8, 6))
-plt.scatter(df["lon"], df["lat"], c="red", marker="o", s=50, label="Estacions")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Ubicació de les estacions meteorològiques")
+fig = plt.figure(figsize=(10, 8), dpi=300, facecolor="white")
+ax = plt.axes(projection=ccrs.PlateCarree(), facecolor="white")
+mapa_base(ax, df["lon"], df["lat"])
+ax.scatter(df["lon"], df["lat"], color="red", marker="o", s=60, edgecolor="black", label="Estacions", transform=ccrs.PlateCarree())
+ax.set_title("Ubicació de les estacions meteorològiques", fontsize=14, fontweight='bold', pad=20)
+ax.set_xlabel("Longitude (°)", fontsize=12)
+ax.set_ylabel("Latitude (°)", fontsize=12)
+ax.tick_params(labelsize=10)
 plt.legend()
-plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/ubicacio_estacions.png")
-plt.close()
+fig.savefig(f"{carpeta_sortida}/ubicacio_estacions.png", dpi=300)
+plt.close(fig)
 
 # ----------- MAPA DE TEMPERATURA ----------- #
-plt.figure(figsize=(8, 6))
-sc = plt.scatter(df["lon"], df["lat"], c=df["Temp"], cmap="YlOrRd", marker="o", edgecolor="black", s=50)
-plt.colorbar(sc, label="Temperatura (°C)")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Temperatura (°C)")
-plt.clim(df["Temp"].min(), df["Temp"].max())
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/temperatura.png")
-plt.close()
+plot_scatter_cartopy(
+    df["lon"], df["lat"], df["Temp"],
+    cmap_temp, "Temperatura a 2m", "Temperatura (°C)",
+    f"{carpeta_sortida}/temperatura.png", vmin=-20, vmax=45
+)
 
 # ----------- MAPA D’HUMITAT ----------- #
-plt.figure(figsize=(8, 6))
-sc = plt.scatter(df["lon"], df["lat"], c=df["Humitat"], cmap="Greens", marker="o", edgecolor="black", s=50)
-plt.colorbar(sc, label="Humitat relativa (%)")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Humitat (%)")
-plt.clim(df["Humitat"].min(), df["Humitat"].max())
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/humitat.png")
-plt.close()
+plot_scatter_cartopy(
+    df["lon"], df["lat"], df["Humitat"],
+    cmap_humitat, "Humitat relativa a 2m", "Humitat relativa (%)",
+    f"{carpeta_sortida}/humitat.png", vmin=0, vmax=100
+)
 
 # ----------- COMPROVAR SI HI HA PRECIPITACIÓ ----------- #
 if df["Pluja"].max() > 0:
-    plt.figure(figsize=(8, 6))
-    sc = plt.scatter(df["lon"], df["lat"], c=df["Pluja"], cmap="Blues", marker="o", edgecolor="black", s=50)
-    plt.colorbar(sc, label="Pluja (mm)")
-    plt.xlabel("Longitud")
-    plt.ylabel("Latitud")
-    plt.title("Precipitació (mm)")
-    plt.clim(df["Pluja"].min(), df["Pluja"].max())
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(f"{carpeta_sortida}/precipitacio.png")
-    plt.close()
+    plot_scatter_cartopy(
+        df["lon"], df["lat"], df["Pluja"],
+        cmap_pluja, "Pluja acumulada", "Pluja (mm)",
+        f"{carpeta_sortida}/precipitacio.png", vmin=0, vmax=150
+    )
 else:
     print("Totes les estacions tenen 0.0 mm de precipitació, no es genera mapa.")
 
 # ----------- MAPA DE DIRECCIÓ DEL VENT ----------- #
-plt.figure(figsize=(8, 6))
+fig = plt.figure(figsize=(10, 8), dpi=300, facecolor="white")
+ax = plt.axes(projection=ccrs.PlateCarree(), facecolor="white")
+mapa_base(ax, df["lon"], df["lat"])
 scale_factor = 0.05
 u = np.cos(np.radians(df["VentDir"])) * df["VentFor"] * scale_factor
 v = np.sin(np.radians(df["VentDir"])) * df["VentFor"] * scale_factor
-plt.quiver(df["lon"], df["lat"], u, v, angles="xy", scale_units="xy", scale=1, color="blue", alpha=0.7)
-plt.scatter(df["lon"], df["lat"], color="red", marker="o", s=50, label="Estacions")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Direcció i intensitat del vent")
+ax.quiver(df["lon"], df["lat"], u, v, angles="xy", scale_units="xy", scale=1, color="blue", alpha=0.7, transform=ccrs.PlateCarree())
+ax.scatter(df["lon"], df["lat"], color="red", marker="o", s=60, edgecolor="black", label="Estacions", transform=ccrs.PlateCarree())
+ax.set_title("Direcció i intensitat del vent", fontsize=14, fontweight='bold', pad=20)
+ax.set_xlabel("Longitude (°)", fontsize=12)
+ax.set_ylabel("Latitude (°)", fontsize=12)
+ax.tick_params(labelsize=10)
 plt.legend()
-plt.grid(True)
 plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/direccio_vent.png")
-plt.close()
+fig.savefig(f"{carpeta_sortida}/direccio_vent.png", dpi=300)
+plt.close(fig)
 
 # ----------- MAPA DE FORÇA DEL VENT ----------- #
-plt.figure(figsize=(8, 6))
-sc = plt.scatter(df["lon"], df["lat"], c=df["VentFor"], cmap="Purples", marker="o", edgecolor="black", s=50)
-plt.colorbar(sc, label="Velocitat del vent (km/h)")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Velocitat del vent (km/h)")
-plt.clim(df["VentFor"].min(), df["VentFor"].max())
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/velocitat_vent.png")
-plt.close()
+plot_scatter_cartopy(
+    df["lon"], df["lat"], df["VentFor"],
+    cmap_ventfor, "Velocitat del vent a 10m", "Velocitat del vent (km/h)",
+    f"{carpeta_sortida}/velocitat_vent.png", vmin=0, vmax=200
+)
 
 # ----------- MAPA DE PRESSIÓ ----------- #
-plt.figure(figsize=(8, 6))
-sc = plt.scatter(df["lon"], df["lat"], c=df["Patm"], cmap="coolwarm", marker="o", edgecolor="black", s=50)
-plt.colorbar(sc, label="Pressió (hPa)")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Pressió atmosfèrica (hPa)")
-plt.clim(df["Patm"].min(), df["Patm"].max())
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/pressio_atm.png")
-plt.close()
+plot_scatter_cartopy(
+    df["lon"], df["lat"], df["Patm"],
+    cmap_patm, "Pressió atmosfèrica (hPa)", "Pressió (hPa)",
+    f"{carpeta_sortida}/pressio_atm.png", vmin=980, vmax=1040
+)
 
 # ----------- MAPA DE D'ALTITUD ----------- #
-plt.figure(figsize=(8, 6))
-sc = plt.scatter(df["lon"], df["lat"], c=df["Alt"], cmap="viridis", marker="o", edgecolor="black", s=50)
-plt.colorbar(sc, label="Altitud (m)")
-plt.xlabel("Longitud")
-plt.ylabel("Latitud")
-plt.title("Altitud (m)")
-plt.clim(df["Alt"].min(), df["Alt"].max())
-plt.grid(True)
-plt.tight_layout()
-plt.savefig(f"{carpeta_sortida}/altitud.png")
-plt.close()
+plot_scatter_cartopy(
+    df["lon"], df["lat"], df["Alt"],
+    cmap_alt, "Altitud (m)", "Altitud (m)",
+    f"{carpeta_sortida}/altitud.png", vmin=np.nanmin(df["Alt"]), vmax=np.nanmax(df["Alt"])
+)
 
-print (f"Visualitzacions generades correctament a la carpeta: {carpeta_sortida}")
+print(f"Visualitzacions generades correctament a la carpeta: {carpeta_sortida}")
