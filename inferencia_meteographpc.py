@@ -1,3 +1,23 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+==============================================================================
+inferencia_meteographpc.py
+
+Script per carregar les prediccions de MeteoGraphPC, convertir-les a unitats
+físiques i generar un fitxer NetCDF amb tota la informació necessària.
+
+FUNCIONALITATS PRINCIPALS:
+  - Llegeix els arxius `.npy` de prediccions i valors reals.
+  - Reorganitza les dades i crea la màscara de nodes vàlids.
+  - Converteix els valors a °C, %, mm, km/h, hPa, etc.
+  - Desa el resultat en un NetCDF amb timestamps i metadades de nodes.
+
+AUTOR: Nil Farrés Soler
+==============================================================================
+"""
+
 import numpy as np
 import pandas as pd
 from netCDF4 import Dataset
