@@ -9,7 +9,7 @@ Script per carregar les prediccions de MeteoGraphPC, convertir-les a unitats
 físiques i generar un fitxer NetCDF amb tota la informació necessària.
 
 FUNCIONALITATS PRINCIPALS:
-  - Llegeix els arxius ".npy" de prediccions i valors reals.
+  - Llegeix els arxius ".npy" de prediccions i valors reals del test (en aquest treball, dades de l'any 2024).
   - Reorganitza les dades i crea la màscara de nodes vàlids.
   - Converteix els valors a °C, %, mm, km/h, hPa, etc.
   - Desa el resultat en un NetCDF amb timestamps i metadades de nodes.
@@ -25,30 +25,30 @@ from datetime import datetime, timedelta
 
 # ------------------- CONFIGURACIÓ -------------------
 
-# 1. Fitxers d'entrada (adapta noms si cal)
-PRED_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec/y_pred_test.npy'
-TRUE_PATH   = 'C:/Users/nfarres/Documents/TFG/models/exec/y_true_test.npy'
+# 1. Fitxers d'entrada (adaptar els noms si cal)
+PRED_PATH   = 'C:/Users/nfarres/Documents/TFG/models/model_curt_termini/y_pred_test.npy'
+TRUE_PATH   = 'C:/Users/nfarres/Documents/TFG/models/model_curt_termini/y_true_test.npy'
 NODES_PATH  = 'nodes_metadata.csv'
 
 # 2. Paràmetres de la generació de seqüències:
 DATA_INICI_TEST = datetime(2024, 1, 1, 0, 0)   # PRIMER TIMESTAMP de la PRIMERA seqüència de test
-STRIDE          = 12                          # hores (tal com vas entrenar)
-WINDOW_SIZE     = 48                          # hores (tal com vas entrenar)
+STRIDE          = 12                          # hores (tal i com es va entrenar)
+WINDOW_SIZE     = 48                          # hores (tal i com es va entrenar)
 HORIZON         = 6                           # nombre d'horitzons
-HORIZON_DELTA   = 1                           # hores: normalment 1 (canvia-ho si cada horitzó són 6h)
+HORIZON_DELTA   = 1                           # hores: normalment 1 (canviar-ho si cada horitzó són 6h)
 
-# 3. Variables meteorològiques (cal que coincideixin amb les que vas entrenar)
+# 3. Variables meteorològiques (cal que coincideixin amb les que es va entrenar el model)
 variables = [
     "Temp", "Humitat", "Pluja", "VentFor", "Patm", "Vent_u", "Vent_v"
 ]
 
 # ------------------- CARREGA DE DADES -------------------
 
-# Carrega les prediccions i valors reals (en “unitats internes”)  
+# Carrega les prediccions i valors reals (en "unitats internes")  
 y_pred = np.load(PRED_PATH)   # shape: [S, H, N, F]
 y_true = np.load(TRUE_PATH)   # shape: [S, H, N, F]
 
-# → NOMÉS LA PRIMERA SEQÜÈNCIA (modificar en funció del que es vulgui)
+# → NOMÉS LA PRIMERA SEQÜÈNCIA
 y_pred = y_pred[:1]  # shape: [1, H, N, F]
 y_true = y_true[:1]
 S, H, N, F = y_pred.shape
@@ -115,7 +115,7 @@ y_true_phys[..., idx_plu] = np.expm1(y_true_flat[..., idx_plu])
 y_pred_phys[..., idx_wind] = y_pred_flat[..., idx_wind] * 3.6
 y_true_phys[..., idx_wind] = y_true_flat[..., idx_wind] * 3.6
 
-# — Patm: de “anomalia en hPa” a hPa absolut  
+# — Patm: d'"anomalia en hPa" a hPa absolut  
 #   Patm_internal = P - 1013 [hPa]  →  P_hPa = Patm_internal + 1013  
 y_pred_phys[..., idx_patm] = y_pred_flat[..., idx_patm] + 1013.0
 y_true_phys[..., idx_patm] = y_true_flat[..., idx_patm] + 1013.0
@@ -126,14 +126,14 @@ y_true_phys[..., idx_vu] = y_true_flat[..., idx_vu] * 3.6
 y_pred_phys[..., idx_vv] = y_pred_flat[..., idx_vv] * 3.6
 y_true_phys[..., idx_vv] = y_true_flat[..., idx_vv] * 3.6
 
-# 3) (Opcional) Si vols omplir amb NaN on la màscara sigui 0:
+# 3) (Opcional) Si es vol omplir amb NaN on la màscara sigui 0:
 #    per exemple:
 #    y_pred_phys[mask == 0] = np.nan
 #    y_true_phys[mask == 0] = np.nan
 
 # ------------------- CREACIÓ DEL NetCDF -------------------
 
-OUTPUT_NC = 'C:/Users/nfarres/Documents/TFG/models/exec/predictions_meteographpc_test.nc'
+OUTPUT_NC = 'C:/Users/nfarres/Documents/TFG/models/model_curt_termini/prediccions_meteographpc_test_model_curt_termini.nc'
 ncfile = Dataset(OUTPUT_NC, mode='w', format='NETCDF4')
 
 # Dimensions
@@ -162,8 +162,8 @@ true_nc = ncfile.createVariable(
 )
 mask_nc = ncfile.createVariable('mask', np.int8, ('time', 'node'))  # 1: vàlid, 0: no vàlid
 
-# Atributs “units” per a cada variable meteorològica
-# (en l’ordre de la llista `variables`)
+# Atributs "units" per a cada variable meteorològica
+# (en l'ordre de la llista "variables")
 #   Temp: °C
 #   Humitat: %
 #   Pluja: mm
@@ -180,11 +180,11 @@ unit_list = [
     "km/h"  # Vent_v
 ]
 for i, varname in enumerate(variables):
-    pred_nc.setncattr('units', '')    # (no té sentit per tota la matriu; l’exportarem per variable)
+    pred_nc.setncattr('units', '')    # (no té sentit per tota la matriu; l'exportarem per variable)
     true_nc.setncattr('units', '')
-# Un cop creades totes, afegim un array d’atributs “units”:
-# En NetCDF4 no es pot posar directament un vector d’atributs; en comptes d’això, crearem un diccionari
-# d’atributs dins de l’arxiu. Exemple:
+# Un cop creades totes, afegim un array d'atributs "units":
+# En NetCDF4 no es pot posar directament un vector d'atributs; en comptes d'això, crearem un diccionari
+# d'atributs dins de l'arxiu. Exemple:
 for i, u in enumerate(unit_list):
     ncfile.setncattr(f'unit_{variables[i]}', u)
 
