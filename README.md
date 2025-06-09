@@ -2,7 +2,7 @@
 
 **Nil Farrés Soler , juny de 2025**
 
-Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament del model MeteoGraphPC basades en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Es compta amb dades meteorològiques horàries des de 2016 i fins a 2024 cedides per la secció de meteorologia de 3Cat. Tot el procés està pensat per ser robust, escalable i reutilitzable.
+Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament del model MeteoGraphPC basat en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Es compta amb dades meteorològiques horàries des de 2016 i fins a 2024 cedides per la secció de meteorologia de 3Cat. Tot el procés està pensat per ser robust, escalable i reutilitzable.
 
 A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de gener de 2016)** de dades meteorològiques oficials, a raó d'un fitxer CSV per hora, dins el fitxer `DADES_METEO_PC.zip`. Això permet provar el pipeline sense necessitat de descarregar grans volums de dades.
 
