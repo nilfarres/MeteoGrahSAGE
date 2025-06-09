@@ -51,6 +51,11 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 ├── generate_seq.py                # Generació de seqüències temporals de grafs dinàmics.
 ├── all_sequences.py               # Agrupació de seqüències temporals en chunks per entrenament.
 ├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN. Execució amb run_MeteoGraphPC.bat.
+├── visualitzacio_metriques.py     # Visualització de les mètriques del model durant l'entrenament, la validació i el test a partir d'un fitxer csv.
+├── nodes_metadata.py              # Crea un fitxer csv amb tots els nodes del dataset juntament amb la seva localització.
+├── matriu_corr.py                 # Genera una matriu de correlació de les prediccions al test i una per les dades reals.
+├── inferencia_meteographpc.py     # Crea un fitxer en format NetCDF a partir de les prediccions generades per MeteoGraphPC.
+├── mapa_preds.py                  # Genera mapes per visualitzar les prediccions de MeteoGraphPC a partir d'un fitxer NetCDF. Execució amb mapa_preds.bat
 ```
 
 **Important: cal executar els codis en l'ordre anterior.**
@@ -73,6 +78,7 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
     - `networkx`
     - `scipy`
     - `argparse`
+    - `netCDF4`
     - Altres dependències bàsiques de la llibreria estàndard
 
 **Instal·lació ràpida de dependències principals:**
@@ -87,7 +93,7 @@ pip install torch-geometric-temporal==0.56.0
 
 ---
 
-## Ordre d'execució i explicació de cada script
+## Ordre d'execució i explicació de cada script principal
 
  1. **`fitxers_buits.py`**
     - **Funció:** detectar fitxers CSV buits o no llegibles dins l'estructura de carpetes.
