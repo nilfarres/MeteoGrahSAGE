@@ -42,7 +42,7 @@ import cartopy.feature as cfeature
 import matplotlib.colors as mcolors
 
 # ----------- PARÀMETRES ----------- #
-file_path = "2024042900dadesPC_utc.csv"  # Substitueix pel fitxer que vulguis visualitzar
+file_path = "2024010300dadesPC_utc.csv"  # Substituir pel fitxer que es vulgui visualitzar
 df = pd.read_csv(file_path)
 nom_base = os.path.splitext(os.path.basename(file_path))[0]
 carpeta_sortida = f"visualitzacio_dadesreals_{nom_base}"
@@ -64,7 +64,8 @@ cmap_temp = mcolors.LinearSegmentedColormap.from_list(
 cmap_pluja = mcolors.LinearSegmentedColormap.from_list(
     "MeteoPluja",
     [
-        (0.00, "#B2D2F1"),
+        (0.00, "#FFFFFF"),
+        (0.01, "#B2D2F1"),
         (0.15, "#88BFFD"),
         (0.20, "#5C9BE7"),
         (0.30, "#2A94EB"),
@@ -97,15 +98,26 @@ cmap_patm = mcolors.LinearSegmentedColormap.from_list(
 cmap_ventfor = mcolors.LinearSegmentedColormap.from_list(
     "MeteoVentFor",
     [
-        (0.00, "#E0D7FF"),
-        (0.35, "#A984E8"),
-        (0.70, "#613DC1"),
-        (1.00, "#190A33"),
+        (0.00, "#C7E6FF"),  # blau cel
+        (0.08, "#A1D0FF"),  # blau molt clar
+        (0.16, "#75C0FF"),  # blau clar
+        (0.22, "#5BA3F7"),  # blau mitjà
+        (0.28, "#5180CF"),  # blau intens
+        (0.34, "#6E6FC9"),  # blau-lila suau
+        (0.40, "#8B77D1"),  # blau-lila
+        (0.48, "#A086E2"),  # lila-blau clar
+        (0.56, "#B699F4"),  # lila clar
+        (0.62, "#A984E8"),  # lila clàssic
+        (0.70, "#9C6BC8"),  # lila mitjà
+        (0.78, "#8B49C6"),  # lila/morat
+        (0.86, "#713BAF"),  # morat intens
+        (0.93, "#613DC1"),  # morat fosc
+        (1.00, "#2B184E"),  # morat-negre
     ]
 )
 cmap_alt = "viridis"
 
-# ----------- FUNCIONS D’ESTÈTICA CARTOGRÀFICA ----------- #
+# ----------- FUNCIONS D'ESTÈTICA CARTOGRÀFICA ----------- #
 def mapa_base(ax, lons, lats, margin=0.1):
     ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="white", zorder=0)
     ax.add_feature(cfeature.OCEAN.with_scale("10m"), facecolor="white", zorder=0)
@@ -187,7 +199,7 @@ plot_scatter_cartopy(
     f"{carpeta_sortida}/temperatura.png", vmin=-20, vmax=45
 )
 
-# ----------- MAPA D’HUMITAT ----------- #
+# ----------- MAPA D'HUMITAT ----------- #
 plot_scatter_cartopy(
     df["lon"], df["lat"], df["Humitat"],
     cmap_humitat, "Humitat relativa a 2m", "Humitat relativa (%)",
@@ -222,7 +234,7 @@ plt.tight_layout()
 fig.savefig(f"{carpeta_sortida}/direccio_vent.png", dpi=300)
 plt.close(fig)
 
-# ----------- MAPA DE FORÇA DEL VENT ----------- #
+# ----------- MAPA DE VELOCITAT DEL VENT ----------- #
 plot_scatter_cartopy(
     df["lon"], df["lat"], df["VentFor"],
     cmap_ventfor, "Velocitat del vent a 10m", "Velocitat del vent (km/h)",
