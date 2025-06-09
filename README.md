@@ -2,7 +2,7 @@
 
 **Nil Farrés Soler , juny de 2025**
 
-Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament de diverses versions del model MeteoGraphPC basades en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Es compta amb dades meteorològiques horàries des de 2016 i fins a 2024 cedides per la secció de meteorologia de 3Cat. Tot el procés està pensat per ser robust, escalable i reutilitzable.
+Aquest repositori recull el pipeline complet per al processament massiu, la normalització, la transformació en grafs i l'entrenament del model MeteoGraphPC basades en Graph Neural Networks (GNNs) per a la predicció de variables meteorològiques als Països Catalans. Es compta amb dades meteorològiques horàries des de 2016 i fins a 2024 cedides per la secció de meteorologia de 3Cat. Tot el procés està pensat per ser robust, escalable i reutilitzable.
 
 A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de gener de 2016)** de dades meteorològiques oficials, a raó d'un fitxer CSV per hora, dins el fitxer `DADES_METEO_PC.zip`. Això permet provar el pipeline sense necessitat de descarregar grans volums de dades.
 
@@ -18,7 +18,6 @@ A més dels scripts, s'hi inclouen dades reals d'exemple: **un dia complet (1 de
 - [Notes addicionals i recomanacions](#notes-adicionals-i-recomanacions)
 - [Autor i contacte](#autor-i-contacte)
 - [Condicions d’ús i citació](#condicions-dús-i-citació)
-- [Política de privacitat](#política_de_privacitat)
 
 ---
 
@@ -32,7 +31,8 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 5. **Conversió a grafs dinàmics** amb PyTorch Geometric.
 6. **Generació de seqüències temporals** de grafs per a models seqüencials.
 7. **Agrupació en chunks per un entrenament més eficient**.
-8. **Entrenament i test de diverses versions del model MeteoGraphPC utilitzant GNN**.
+8. **Entrenament, validació i test del model MeteoGraphPC utilitzant GNN**.
+9. **Anàlisi detallat de les prediccions de MeteoGraphPC**.
 
 ---
 
@@ -50,7 +50,7 @@ Aquest projecte cobreix totes les fases necessàries per a la modelització mete
 ├── toData.py                      # Conversió de fitxers preprocessats a grafs dinàmics (PyTorch Geometric). Execució amb execute_toData.bat.
 ├── generate_seq.py                # Generació de seqüències temporals de grafs dinàmics.
 ├── all_sequences.py               # Agrupació de seqüències temporals en chunks per entrenament.
-├── MeteoGraphPC.py                # Entrenament i test de les diverses versions del model MeteoGraphPC basades en GNN. Execució amb run_MeteoGraphPC.bat.
+├── MeteoGraphPC.py                # Entrenament, validació i test del model MeteoGraphPC basat en GNN. Execució amb run_MeteoGraphPC.bat.
 ├── visualitzacio_metriques.py     # Visualització de les mètriques del model durant l'entrenament, la validació i el test a partir d'un fitxer csv.
 ├── nodes_metadata.py              # Crea un fitxer csv amb tots els nodes del dataset juntament amb la seva localització.
 ├── matriu_corr.py                 # Genera una matriu de correlació de les prediccions al test i una per les dades reals.
@@ -144,8 +144,8 @@ pip install torch-geometric-temporal==0.56.0
     - **Requisits:** `torch`, `tqdm`, `glob`, `os`
 
 9. **`MeteoGraphPC.py`**
-    - **Funció:** entrenar i avaluar les diverses verions del model MeteoGraphPC basat en GNN sobre les seqüències de grafs dinàmics generades.
-    - **Característiques:** diverses arquitectures, validació, test, càlcul de mètriques i comparativa amb baselines.
+    - **Funció:** entrenar i avaluar el model MeteoGraphPC basat en GNN sobre les seqüències de grafs dinàmics generades.
+    - **Característiques:** entrenament, validació, test, càlcul de mètriques i comparativa amb baselines.
     - **Ús:** executa'l amb el fitxer `run_MeteoGraphPC.sh` passant la ruta a les seqüències (`--seq_dir`) i la resta de paràmetres desitjats (features, targets, optimitzadors, etc.).
     - **Requisits:** `torch`, `torch_geometric`, `torch_geometric_temporal`, `numpy`, `pandas`, `tqdm`, `scikit-learn`
 
@@ -228,16 +228,8 @@ Si es vol utilitzar el codi, les dades o qualsevol recurs d'aquest repositori pe
 
 Qualsevol ús comercial o publicació sense permís explícit es considera una vulneració dels drets de l'autor.
 
----
-
-## Política de privacitat
-
-Aquest repositori només conté codi font i dades meteorològiques públiques d'exemple.  
-No es recull, emmagatzema ni processa cap dada personal ni identificativa dels usuaris.
+Aquest repositori només conté codi font i dades meteorològiques públiques d'exemple.
 
 ---
 
 *Per a qualsevol ús, dubte o consulta, contacta directament amb l'autor del projecte.*
-
-
-
