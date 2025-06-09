@@ -44,13 +44,14 @@ DEVICE="cuda"
 GRAD_CLIP=1.0
 STD_EPS=1e-6
 DL_NUM_WORKERS=2        
-MODEL="MeteoGraphPC_v1"
+MODEL="MeteoGraphPC_v1" (en aquest treball s'ha fet ús del model MeteoGraphPC_v1; les altres versions estan en fase de proves i no s'han provat ni utilitzat en aquest treball)
 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
 
 WS=48 # window size
 STR=12 # stride
 HH=6  # horitzó predicció
 
+#Modificar segons faci falta
 SAVE_DIR="/data2/users/nfarres/checkpoints/${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}"
 LOG_CSV="/data2/users/nfarres/checkpoints/${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}/train_${MODEL}_ws${WS}_str${STR}_hh${HH}_${TIMESTAMP}.csv"
 NORM_JSON="PC_norm_params.json"
