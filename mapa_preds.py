@@ -5,17 +5,17 @@ mapa_preds.py
 
 Aquest script llegeix un fitxer NetCDF amb prediccions meteorològiques en unitats físiques
 (°C, %, mm, km/h, hPa, etc.) i genera mapes en format PNG per a diferents variables:
-- Temperatura (“Temp” en °C)
-- Humitat relativa (“Humitat” en %)
-- Pluja acumulada (“Pluja” en mm)
-- Pressió atmosfèrica (“Patm” en hPa)
-- Vent (“VentFor” en km/h, més files “Vent_u” i “Vent_v” per als components)
+- Temperatura ("Temp" en °C)
+- Humitat relativa ("Humitat" en %)
+- Precipitació acumulada per hora ("Pluja" en mm)
+- Pressió atmosfèrica ("Patm" en hPa)
+- Vent ("VentFor" en km/h, més les files "Vent_u" i "Vent_v" per als components)
   
 El codi utilitza interpolació lineal (amb màscara fora del convex hull) per evitar valors
-extravagants. Si es desitja, també es pot triar interpolació “nearest”. Per al vent, es mostra
+extravagants. Si es desitja, també es pot triar interpolació "nearest". Per al vent, es mostra
 la intensitat de la velocitat mitjançant un fons de contorns i fletxes (barbs) per als vectors.
 
-Requisits:
+REQUISITS:
     - Python 3.7+
     - numpy
     - scipy
@@ -23,14 +23,8 @@ Requisits:
     - netCDF4
     - cartopy
 
-Exemple d'ús:
-    python mapa_preds.py \
-        --ncfile prediccions_meteographpc_test_units.nc \
-        --time 1 \
-        --variable Temp \
-        --interp linear \
-        --resol 300 \
-        --output mapa_temp_01jun2025.png
+EXECUCIÓ: 
+Aquest codi es pot executar fàcilment mitjançant l'script mapa_preds.bat, disponible en aquest repositori.
 
 Autor: Nil Farrés Soler
 """
@@ -61,7 +55,7 @@ mpl.rcParams['savefig.facecolor'] = 'white'
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Genera un mapa meteorològic a partir d'un NetCDF de prediccions."
+        description="Genera un mapa meteorològic a partir d'un fitxer NetCDF de prediccions."
     )
     parser.add_argument(
         "--ncfile", "-n", type=str, required=True,
@@ -85,7 +79,7 @@ def parse_arguments():
         "  'nearest': valor del punt més proper per a tota la regió.\n"
         "  'hybrid': primer 'linear', i per a NaN (fora del hull) omple amb 'nearest'.\n"
         "  'idw': inverse distance weighting.\n"
-        "  'none': només es mostren els nodes, sense interpolació."
+        "  'none': només es mostren els nodes, sense interpolació (recomanat)."
         )
     )
     parser.add_argument(
@@ -165,7 +159,7 @@ def llegeix_dades(ncfile, timestep, variable):
     if timestep < 0 or timestep >= pred.shape[0]:
         raise IndexError(f"El valor de --time ({timestep}) no és vàlid; màxim index és {pred.shape[0]-1}.")
 
-    # Si volem “Vent" combinat, retornem components u i v
+    # Si volem "Vent" combinat, retornem components u i v
     if variable == "Vent":
         idx_u = var_list.index("Vent_u")
         idx_v = var_list.index("Vent_v")
@@ -222,11 +216,11 @@ def interpolar_valors(lons, lats, vals, xi, yi, metode="linear", max_dist_km=Non
     points = np.vstack((lons[mask_valid], lats[mask_valid])).T
     vals_valid = vals[mask_valid]
 
-    # 2) Interpolació estàndard (com ja tens)
+    # 2) Interpolació
     if metode == "idw":
         # 1) Fem la interpolació IDW (ara amb power=1 per defecte)
         zi_idw = idw_interpolation(lons[mask_valid], lats[mask_valid], vals_valid, xi, yi)
-        # 2) Apliquem un suau filtre gaussià per eliminar els “bullseyes”
+        # 2) Apliquem un suau filtre gaussià per eliminar els "bullseyes"
         #    Sigma petit: 0.8 aprox., depèn de quant vols suavitzar
         zi = gaussian_filter(zi_idw, sigma=0.8)
     elif metode == "nearest":
@@ -240,7 +234,7 @@ def interpolar_valors(lons, lats, vals, xi, yi, metode="linear", max_dist_km=Non
     else:
         raise ValueError(f"Mètode d'interpolació incorrecte: {metode}")
 
-    # 3) Si vols màscarar per distància màxima (opcional)
+    # 3) Si es vol màscarar per distància màxima (opcional)
     if max_dist_km is not None:
         # Convertim lat/lon a km aproximadament (ignorem curvatura, bona aproximació a escala regional)
         def haversine(lon1, lat1, lon2, lat2):
@@ -292,7 +286,7 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
                  vmin=None, vmax=None, args=None):
     """
     Plota un mapa per a una variable scalar:
-    - xi, yi: gràlla de lon/lat (2D).
+    - xi, yi: amb lon/lat (2D).
     - zi: valors interpolats (2D), pot contenir NaN.
     - lons, lats, vals: coordenades i valors reals per a dibuixar punts.
     - variable: nom de la variable (per títol, colorbar).
@@ -305,7 +299,7 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
     """
 
     if zi is None:
-        # Mode sense interpolació: només scatter dels nodes
+        # Mode sense interpolació: només scatter dels nodes (recomanat)
         fig = plt.figure(figsize=(10, 8), dpi=resol_dpi, facecolor='white')
         ax = plt.axes(projection=ccrs.PlateCarree(), facecolor='white')
         ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="white", zorder=0)
@@ -336,7 +330,8 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
         )
         cbar = plt.colorbar(sc, ax=ax, orientation="vertical", pad=0.02, shrink=0.8)
         units = {
-            "Temp": "°C", "Humitat": "%", "Pluja": "mm", "Patm": "hPa"
+            "Temp": "°C", "Humitat": "%", "Pluja": "mm", "Patm": "hPa", "VentFor": "km/h",
+            "Vent_u": "km/h", "Vent_v": "km/h"
         }
         cbar.set_label(f"{variable} ({units.get(variable, '')})", fontsize=12)
         cbar.ax.tick_params(labelsize=10)
@@ -345,20 +340,28 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
             "Humitat": "Humitat relativa a 2m",
             "Pluja": "Pluja acumulada",
             "Patm": "Pressió atmosfèrica",
-            "Vent": "Vent a 10m"
+            "Vent": "Vent a 10m",
+            "VentFor": "Velocitat del vent a 10m",
+            "Vent_u": "Component U del vent a 10m",
+            "Vent_v": "Component V del vent a 10m"
         }
-        title = f"MeteoGraphPC"
-        subtitle = f"{titles.get(variable, variable)} @ {t_label}" if t_label else f"{titles.get(variable, variable)}"
-        ax.set_title(f"{title}\n{subtitle}", fontsize=14, pad=13)
+        title = f"{titles.get(variable, variable)} : {t_label}" if t_label else f"{titles.get(variable, variable)}"
+        ax.set_title(f"{title}", fontsize=14, fontweight='bold', pad=20)
         ax.set_xlabel("Longitude (°)", fontsize=12)
         ax.set_ylabel("Latitude (°)", fontsize=12)
         ax.tick_params(labelsize=10)
+        min_val = np.nanmin(vals_valid)
+        max_val = np.nanmax(vals_valid)
+        unitat = units.get(variable, "")
         plt.subplots_adjust()
-        fig.savefig(output_file, dpi=resol_dpi)
         ax.text(
-            0.99, 0.01, "MeteoGraphPC · TFG Nil Farrés", transform=ax.transAxes,
-            ha="right", va="bottom", fontsize=8, color="gray", alpha=0.7,
-            bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1))
+            0.99, 0.01,
+            f"Min: {min_val:.2f} {unitat} · Max: {max_val:.2f} {unitat}\nMeteoGraphPC · TFG Nil Farrés",
+            transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=9, color="gray",
+            bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1)
+        )
+        fig.savefig(output_file, dpi=resol_dpi)
         plt.close(fig)
         return
 
@@ -385,12 +388,6 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
     ax.add_feature(cfeature.LAKES.with_scale("10m"), facecolor="lightblue", alpha=0.5)
     ax.add_feature(cfeature.STATES.with_scale("10m"), linewidth=0.5, edgecolor="gray", linestyle=":")
 
-    # 4) Màscar i plota el fons neutre (si cal)
-#    if masquejar_exterior:
-#        # Zones on zi és NaN
-#        mask = np.isnan(zi)
-#        ax.pcolormesh(xi, yi, mask, cmap="Greys", shading="auto", zorder=1)
-
     # 5) Dibuixem la superfície interpolada amb contourf
     cf = ax.contourf(
         xi, yi, np.ma.masked_where(np.isnan(zi), zi),
@@ -408,7 +405,24 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
         ax.contour(xi, yi, zi, levels=[1013], colors="k", linewidths=1.2, linestyles="--", transform=ccrs.PlateCarree(), zorder=4)
     if variable == "Pluja":
         ax.contour(xi, yi, zi, levels=[20, 50], colors="k", linewidths=1, linestyles="--", transform=ccrs.PlateCarree(), zorder=4)
-
+    if variable == "VentFor":
+        ax.contour(xi, yi, zi, levels=np.arange(0, 100, 10), colors="k", linewidths=0.8, linestyles="--", transform=ccrs.PlateCarree(), zorder=4)
+    if variable in ["Vent_u", "Vent_v"]:
+        ax.contour(xi, yi, zi, levels=np.arange(-50, 51, 10), colors="k", linewidths=0.8, linestyles="--", transform=ccrs.PlateCarree(), zorder=4)
+    if variable == "Vent":
+        # Per al vent, dibuixem les barbs
+        scale_factor = 0.05
+        u = np.cos(np.radians(zi)) * scale_factor
+        v = np.sin(np.radians(zi)) * scale_factor
+        ax.quiver(
+            xi, yi, u, v,
+            angles="xy", scale_units="xy", scale=1,
+            color="blue", alpha=0.7, zorder=3,
+            transform=ccrs.PlateCarree()
+        )
+    else:
+        # Per altres variables, només contourf
+        pass
 
     # 6) Reforcem els límits del convex hull (opcional):
     #    Dibuixem la triangulació de Delaunay per veure'n l'estructura
@@ -424,18 +438,26 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
         except Exception:
             pass
 
-    # 7a) Filtrar només els nodes que tinguin un valor vàlid (no NaN)
     mask_pts = ~np.isnan(vals)
     lons_pts = lons[mask_pts]
     lats_pts = lats[mask_pts]
     vals_pts = vals[mask_pts]
 
-    # 7b) Dibuixem només aquests nodes
+    # Màscara per als zeros exactes
+    mask_zero = (vals_pts == 0)
+    mask_nozero = (vals_pts != 0)
+
+    # Primer pinta els zeros de blanc
+    ax.scatter(
+        lons_pts[mask_zero], lats_pts[mask_zero], c="#FFFFFF",
+        edgecolor="k", linewidth=0.4, s=25, alpha=0.9,
+        transform=ccrs.PlateCarree(), zorder=3
+    )
+    # Ara pinta la resta de punts (>0) amb el colormap normal
     sc = ax.scatter(
-        lons_pts, lats_pts, c=vals_pts,
-        cmap=cmap, edgecolor="k", linewidth=0.4, s=25, alpha=0.7,
-        transform=ccrs.PlateCarree(), zorder=3,
-        vmin=vmin, vmax=vmax
+        lons_pts[mask_nozero], lats_pts[mask_nozero], c=vals_pts[mask_nozero],
+        cmap=cmap, edgecolor="k", linewidth=0.4, s=25, alpha=0.9,
+        transform=ccrs.PlateCarree(), zorder=4, vmin=vmin, vmax=vmax
     )
 
     # 8) Afegim colorbar
@@ -445,11 +467,20 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
     "Temp": "°C",
     "Humitat": "%",
     "Pluja": "mm",
-    "Patm": "hPa"
+    "Patm": "hPa",
+    "VentFor": "km/h",
+    "Vent_u": "km/h",
+    "Vent_v": "km/h"
     }
     cbar.set_label(f"{variable} ({units.get(variable, '')})", fontsize=12)
 
     cbar.ax.tick_params(labelsize=10)
+
+    # Afegeix mínim i màxim sota la colorbar
+    min_val = np.nanmin(vals)
+    max_val = np.nanmax(vals)
+    unitat = units.get(variable, "")
+
 
     # 9) Títols i eixos
     titles = {
@@ -457,30 +488,34 @@ def plota_scalar(xi, yi, zi, lons, lats, vals, variable, t_label, output_file,
         "Humitat": "Humitat relativa a 2m",
         "Pluja": "Pluja acumulada",
         "Patm": "Pressió atmosfèrica",
-        "Vent": "Vent a 10m"
+        "Vent": "Vent a 10m",
+        "VentFor": "Velocitat del vent a 10m",
+        "Vent_u": "Component U del vent a 10m",
+        "Vent_v": "Component V del vent a 10m"
     }
-    title = f"MeteoGraphPC"
-    subtitle = f"{titles.get(variable, variable)} @ {t_label}" if t_label else f"{titles.get(variable, variable)}"
+    title = f"{titles.get(variable, variable)} : {t_label}" if t_label else f"{titles.get(variable, variable)}"
 
-    ax.set_title(title, fontsize=16, pad=12)
-    ax.set_title(f"{title}\n{subtitle}", fontsize=12, pad=13)
+    ax.set_title(f"{title}", fontsize=12, fontweight='bold', pad=20)
     ax.set_xlabel("Longitude (°)", fontsize=12)
     ax.set_ylabel("Latitude (°)", fontsize=12)
     ax.tick_params(labelsize=10)
 
     # 10) Desem la figura
     plt.subplots_adjust()
-    fig.savefig(output_file, dpi=resol_dpi)
     ax.text(
-    0.99, 0.01, "MeteoGraphPC · TFG Nil Farrés", transform=ax.transAxes,
-    ha="right", va="bottom", fontsize=8, color="gray", alpha=0.7,
-    bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1))
+        0.99, 0.01,
+        f"Min: {min_val:.2f} {unitat} · Max: {max_val:.2f} {unitat}\nMeteoGraphPC · TFG Nil Farrés",
+        transform=ax.transAxes,
+        ha="right", va="bottom", fontsize=9, color="gray",
+        bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1)
+    )
+    fig.savefig(output_file, dpi=resol_dpi)
     plt.close(fig)
 
 
 def plota_vent(lons, lats, vals_u, vals_v, variable, t_label, output_file, resol_dpi=300, max_dist_km=50):
     """
-    Plota un mapa de vent combinat, ara amb màscara de distància màxima com la resta de variables.
+    Dibuixa un mapa de vent combinat, ara amb màscara de distància màxima com la resta de variables.
     """
     speed = np.sqrt(vals_u**2 + vals_v**2)
     mask_valid = ~np.isnan(speed)
@@ -557,14 +592,23 @@ def plota_vent(lons, lats, vals_u, vals_v, variable, t_label, output_file, resol
     cbar = plt.colorbar(cf, ax=ax, orientation="vertical", pad=0.02, shrink=0.8)
     cbar.set_label("Velocitat del vent (km/h)", fontsize=12)
     cbar.ax.tick_params(labelsize=10)
-    title = f"MeteoGraphPC"
-    subtitle = f"Vent a 10m @ {t_label}" if t_label else "Vent 10m"
-    ax.set_title(title, fontsize=16, pad=12)
-    ax.set_title(f"{title}\n{subtitle}", fontsize=12, pad=13)
+
+    min_val = np.nanmin(speed)
+    max_val = np.nanmax(speed)
+
+    title = f"Vent a 10m : {t_label}" if t_label else "Vent 10m"
+    ax.set_title(f"{title}", fontsize=16, fontweight='bold', pad=20)
     ax.set_xlabel("Longitude (°)", fontsize=12)
     ax.set_ylabel("Latitude (°)", fontsize=12)
     ax.tick_params(labelsize=10)
     plt.subplots_adjust()
+    ax.text(
+        0.99, 0.01,
+        f"Min: {min_val:.2f} · Max: {max_val:.2f} \nMeteoGraphPC · TFG Nil Farrés",
+        transform=ax.transAxes,
+        ha="right", va="bottom", fontsize=9, color="gray",
+        bbox=dict(facecolor="white", alpha=0.3, edgecolor="none", pad=1)
+    )
     fig.savefig(output_file, dpi=resol_dpi)
     plt.close(fig)
 
@@ -584,57 +628,78 @@ def filtra_duplicats(lons, lats, *vals_arrays):
     return tuple(arrays)
 
 
-# Definim tres colors base com a tuples RGB (entre 0 i 1):
-marró = (120/255,  40/255,  10/255)   # un marró fosc
-blanc = (1.0, 1.0, 1.0)
-vermell_suau = (230/255,  50/255,  50/255)
-verd_suau    = ( 50/255, 160/255,  50/255)
-blau_fosc    = ( 20/255,  50/255, 150/255)
-porpra       = (150/255,  20/255, 100/255)
-
-# Temperatura (blau → blanc → vermell)
+# Temperatura
 cmap_temp = mcolors.LinearSegmentedColormap.from_list(
     "MeteoTemp",
     [
-        (0.00, "#0033A0"), # blau fosc (molt fred, < 0 °C)
-        (0.30, "#338FFF"), # blau clar (fred, ~10 °C)
-        (0.50, "#FFCF96"), # groc clar (temperatura càlida, ~20 °C)
-        (0.70, "#FF8C00"), # taronja (temperatura càlida, ~30 °C)
-        (0.90, "#FF1E00"), # vermell suau (molt càlid, ~35 °C)
-        (1.00, "#A70000"), # granate (temperatura extrema, > 40 °C)
+        (0.00, "#0033A0"), # blau fosc (molt fred)
+        (0.22, "#339FFF"), # blau clar (fred)
+        (0.40, "#A7F797"), # verd clar (temperatura suau, ~15-18°C)
+        (0.55, "#F7F797"), # groc pàl·lid (suau/càlid, ~22-25°C)
+        (0.70, "#FF8C00"), # taronja (càlid, ~30°C)
+        (0.88, "#FF1E00"), # vermell (molt càlid)
+        (1.00, "#A70000"), # granate (extrem)
     ]
 )
 
-# Pluja (blanc → verd → blau → violeta)
+# Pluja
 cmap_pluja = mcolors.LinearSegmentedColormap.from_list(
     "MeteoPluja",
     [
-        (0.00, "#FFFFCC"),  # blanc-groc (0 mm)
-        (0.15, "#A7F7A7"), # verd clar (~5 mm)
-        (0.40, "#3388FF"), # blau mitjà (~20 mm)
-        (0.80, "#A43FFF"), # violeta (pluja molt forta, ~80 mm)
-        (1.00, "#FF3333"), # vermell (pluja extrema, >120 mm)
+        (0.00, "#FFFFFF"),   # BLANC pels zeros exactes!
+        (0.01, "#B2D2F1"),  # Ja comença el blau molt clar
+        (0.15, "#88BFFD"),
+        (0.20, "#5C9BE7"),
+        (0.30, "#2A94EB"),
+        (0.40, "#007CC4"),
+        (0.60, "#004A8B"),
+        (0.85, "#002050"),
+        (1.00, "#4B0469"),
     ]
 )
 
-# Humitat (marró → groc → verd → blau)
+# Humitat
 cmap_humitat = mcolors.LinearSegmentedColormap.from_list(
     "MeteoHumitat",
     [
-        (0.00, "#E7C47E"),  # marró-groc (sec, 0%)
-        (0.35, "#F6F77A"),  # groc clar (~30%)
-        (0.65, "#70E66C"),  # verd (~65%)
-        (1.00, "#75B9F7"),  # blau clar (humit, 100%)
+        (0.00, "#F7FCF5"),  # blanc-groc verdós (0%)
+        (0.20, "#D9F0A3"),  # verd molt clar (~20%)
+        (0.40, "#A1D99B"),  # verd clar (~40%)
+        (0.65, "#41AB5D"),  # verd viu (~65%)
+        (0.85, "#238B45"),  # verd fosc (~85%)
+        (1.00, "#00441B"),  # verd molt fosc (100%)
     ]
 )
 
-# Pressió atmosfèrica (blau → blanc → vermell suau)
+# Pressió atmosfèrica
 cmap_patm = mcolors.LinearSegmentedColormap.from_list(
     "MeteoPatm",
     [
         (0.00, "#4A90E2"),   # blau (baixa pressió)
-        (0.50, "#FFFFFF"),   # blanc (1013 hPa)
+        (0.40, "#A7F797"),   # verd (1013 hPa)
         (1.00, "#BD10E0"),   # porpra (alta pressió)
+    ]
+)
+
+# Velocitat del vent
+cmap_ventfor = mcolors.LinearSegmentedColormap.from_list(
+    "MeteoVentFor",
+    [
+        (0.00, "#C7E6FF"),  # blau cel
+        (0.08, "#A1D0FF"),  # blau molt clar
+        (0.16, "#75C0FF"),  # blau clar
+        (0.22, "#5BA3F7"),  # blau mitjà
+        (0.28, "#5180CF"),  # blau intens
+        (0.34, "#6E6FC9"),  # blau-lila suau
+        (0.40, "#8B77D1"),  # blau-lila
+        (0.48, "#A086E2"),  # lila-blau clar
+        (0.56, "#B699F4"),  # lila clar
+        (0.62, "#A984E8"),  # lila clàssic
+        (0.70, "#9C6BC8"),  # lila mitjà
+        (0.78, "#8B49C6"),  # lila/morat
+        (0.86, "#713BAF"),  # morat intens
+        (0.93, "#613DC1"),  # morat fosc
+        (1.00, "#2B184E"),  # morat-negre
     ]
 )
 
@@ -696,16 +761,19 @@ def main():
 
             if args.variable == "Temp":
                 cmap_sel = cmap_temp
-                vmin, vmax = -10, 40
+                vmin, vmax = -20, 45
             elif args.variable == "Humitat":
                 cmap_sel = cmap_humitat
                 vmin, vmax = 0, 100
             elif args.variable == "Pluja":
-                cmap_sel = cmap_pluja
-                vmin, vmax = 0, 120
+                cmap_sel =  cmap_pluja
+                vmin, vmax = 0, 150
             elif args.variable == "Patm":
                 cmap_sel = cmap_patm
                 vmin, vmax = 980, 1040
+            elif args.variable == "VentFor":
+                cmap_sel = cmap_ventfor
+                vmin, vmax = 0, 200
             else:
                 cmap_sel = "viridis"
                 vmin, vmax = None, None
