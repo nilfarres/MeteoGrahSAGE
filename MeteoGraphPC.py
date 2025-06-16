@@ -3,16 +3,16 @@
 
 """
 ==============================================================================
-Script per entrenar i avaluar les diverses versions del model MeteoGraphPC.
+Script per entrenar i avaluar el model MeteoGraphPC.
 
-Aquest script permet entrenar, validar i testar diferents arquitectures de xarxes neuronals 
+Aquest script permet entrenar, validar i testejar arquitectures de xarxes neuronals 
 en grafs dinàmics, dissenyades per a la predicció de variables meteorològiques a partir de 
 seqüències de grafs d'estacions (preparades prèviament amb "generate_seq.py" i "all_sequences.py").
 
 FUNCIONALITATS PRINCIPALS:
   - Carrega i gestiona grans conjunts de seqüències temporals agrupades en chunks.
   - Disposa de diverses arquitectures de model: 
-      * MeteoGraphPC_v1 (GCN + GRU).
+      * MeteoGraphPC_v1 (GCN + GRU). Aquest és el model utilitzat en el projecte. Les altres versions encara no s'han pogut provar.
       * MeteoGraphPC_v2 (GCN + TCN dilatat).
       * MeteoGraphPC_v3 (GCN + TCN + atenció espacial).
       * MeteoGraphPC_v4 (Transformer temporal + GAT amb edge_attr).
