@@ -224,7 +224,7 @@ Si es vol utilitzar el codi, les dades o qualsevol recurs d'aquest repositori pe
 
 **cal que es demani permís a l'autor i, en cas que la proposta sigui acceptada, es citi explícitament l'autor i el repositori**:
 
-> Nil Farrés Soler. *MeteoGraphPC: aplicació de Graph Neural Networks (GNN) per a la millora de les prediccions meteorològiques als Països Catalans*, 2025. [github.com/nilfarres/MeteoGraphPC](https://github.com/nilfarres/MeteoGraphPC)
+> Nil Farrés Soler. *Aplicació de Graph Neural Networks per a la millora de les prediccions meteorològiques als Països Catalans*, 2025. [github.com/nilfarres/MeteoGraphPC](https://github.com/nilfarres/MeteoGraphPC)
 
 Qualsevol ús comercial o publicació sense permís explícit es considera una vulneració dels drets de l'autor.
 
