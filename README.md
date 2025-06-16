@@ -1,4 +1,4 @@
-# MeteoGraphPC: aplicació de Graph Neural Networks (GNN) per a la millora de les prediccions meteorològiques als Països Catalans.
+# Aplicació de Graph Neural Networks per a la millora de les prediccions meteorològiques als Països Catalans.
 
 **Nil Farrés Soler , juny de 2025**
 
